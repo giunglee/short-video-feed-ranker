@@ -288,9 +288,8 @@ def wide_deep_nn(
     steps: int | None = None,
     compute_xauc: bool = True,
     emb_mode: str = "all",
-    wide_mode: str = "dense_cross",
 ) -> tuple:
-    # wide: per wide_mode; deep: emb (per emb_mode) + dense
+    # wide: crosses + dense; deep: emb (per emb_mode) + dense
     feat = FeatureConfig(
         embedding_configs=_embed_cats(emb_mode),
         cross_feature_configs=_cross_features(),
@@ -298,7 +297,7 @@ def wide_deep_nn(
     )
     ds, feat = _dataset(feat)
     dims = [feat.deep_input_dims, *(hidden_dims or WIDE_DEEP_NN_DIMS_DEFAULT)]
-    model = WideDeepNN(feat, dims, dropout_ratio, wide_mode=wide_mode)
+    model = WideDeepNN(feat, dims, dropout_ratio)
     trainer = _trainer(model, ds, weight_decay, epochs, steps, compute_xauc).build()
     return trainer.fit(), trainer
 
@@ -313,7 +312,6 @@ def run_experiment(
     compute_xauc: bool = True,
     seed: int = 42,
     emb_mode: str = "all",
-    wide_mode: str = "dense_cross",
 ) -> dict:
     baseline = predict_mean()
     if model_name == "predict_mean":
@@ -339,11 +337,6 @@ def run_experiment(
             f"--emb-mode={emb_mode} is only supported for deep_nn/wide_deep_nn; "
             f"got model={model_name}"
         )
-    if wide_mode != "dense_cross" and model_name != "wide_deep_nn":
-        raise ValueError(
-            f"--wide-mode={wide_mode} is only supported for wide_deep_nn; "
-            f"got model={model_name}"
-        )
     runners = {
         "linear_reg": lambda: linear_reg(weight_decay, epochs, steps, compute_xauc),
         "wide_nn": lambda: wide_nn(weight_decay, epochs, steps, compute_xauc),
@@ -358,7 +351,6 @@ def run_experiment(
             steps,
             compute_xauc,
             emb_mode,
-            wide_mode,
         ),
     }
     if model_name not in runners:
@@ -385,7 +377,6 @@ def run_experiment(
         "steps_per_epoch": steps_per_epoch_used,
         "nn_dims": arch_dims,
         "emb_mode": emb_mode if is_mlp else None,
-        "wide_mode": wide_mode if model_name == "wide_deep_nn" else None,
         "dropout_ratio": dropout_ratio if is_mlp else None,
         "weight_decay": weight_decay,
         "baseline_val_mae": baseline["val_mae"],
@@ -480,16 +471,7 @@ def parse_args() -> argparse.Namespace:
         "uses. 'all' = IDs + profile/context cats (default); "
         "'ids' = user/video/author/music/tag only; "
         "'cats' = profile/context categoricals only (no IDs). "
-        "Wide path is controlled separately by --wide-mode.",
-    )
-    p.add_argument(
-        "--wide-mode",
-        choices=["dense_cross", "crosses", "dense"],
-        default="dense_cross",
-        help="wide_deep_nn only: features on the wide Linear. "
-        "'dense_cross' = dense||crosses (default); "
-        "'crosses' = crosses only; 'dense' = dense only. "
-        "Deep tower always gets emb||dense.",
+        "Wide path is always dense||crosses.",
     )
     return p.parse_args()
 
@@ -509,7 +491,6 @@ if __name__ == "__main__":
         compute_xauc=args.compute_xauc,
         seed=args.seed,
         emb_mode=args.emb_mode,
-        wide_mode=args.wide_mode,
     )
     print(f"RESULT_JSON: {json.dumps(summary, sort_keys=True)}")
     if args.output is not None:

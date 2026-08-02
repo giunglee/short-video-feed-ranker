@@ -74,8 +74,8 @@ paper and its watch-time-prediction follow-ups).
 
 Experiment entry points:
 - `experiments/wide_deep_kuairec.py` — single-seed run; `--emb-mode {all,ids,cats}`
-  for the deep tower, `--wide-mode {dense_cross,crosses,dense}` for the wide
-  Linear on `wide_deep_nn`.
+  selects which embedding tables the deep tower uses (wide path is always
+  dense∥crosses).
 - `experiments/multi_seed.py` — same config across seeds 42–46 (or custom),
   reports mean ± std so a val gap can be checked against seed noise.
 
@@ -104,9 +104,9 @@ All rows: mean ± std over seeds 42–46.
 deep's drop 0. Matching dropout closes the gap.)
 
 Ordering after dropping raw IDs + matched dropout: **deep ≈ W&D ≫ wide > linear**
-on val MAE. Wide-path ablations (`dense_cross` / `crosses` / `dense`) at seed 42
-are within ~0.001 — crosses add little once the deep tower is healthy; keep
-`dense_cross` as the paper-default joint stack.
+on val MAE. A one-off wide-path feature ablation (dense∥crosses vs crosses-only
+vs dense-only) was within ~0.001 at seed 42 — crosses add little once the deep
+tower is healthy; the code keeps the paper-default dense∥crosses stack.
 
 ### 5. Learnings worth remembering
 

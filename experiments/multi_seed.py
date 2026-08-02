@@ -10,9 +10,8 @@ treating it as the answer rather than a plausible one.
 
 Run from repo root, e.g.:
   python -m experiments.multi_seed --model wide_deep_nn --nn-dims 256,64,8,1 \
-      --dropout 0 --emb-mode cats --wide-mode dense_cross \
-      --seeds 42,43,44,45,46 \
-      --output artifacts/wide_deep_m1/wd_wide_path/wd_cats_drop0_dense_cross.json
+      --dropout 0 --emb-mode cats --seeds 42,43,44,45,46 \
+      --output artifacts/wide_deep_m1/wd_wide_path/wd_cats_drop0.json
 """
 from __future__ import annotations
 
@@ -49,12 +48,6 @@ def parse_args() -> argparse.Namespace:
         help="deep_nn / wide_deep_nn embedding tables (see wide_deep_kuairec).",
     )
     p.add_argument(
-        "--wide-mode",
-        choices=["dense_cross", "crosses", "dense"],
-        default="dense_cross",
-        help="wide_deep_nn only: wide-path features (see wide_deep_kuairec).",
-    )
-    p.add_argument(
         "--seeds",
         type=str,
         default="42,43,44,45,46",
@@ -88,7 +81,6 @@ def main() -> None:
             compute_xauc=True,
             seed=seed,
             emb_mode=args.emb_mode,
-            wide_mode=args.wide_mode,
         )
         print(
             f"seed={seed:>4}  best_val_mae={result['best_val_mae']:.4f}  "
@@ -103,7 +95,6 @@ def main() -> None:
         "dropout_ratio": args.dropout,
         "weight_decay": args.weight_decay,
         "emb_mode": args.emb_mode if args.model in ("deep_nn", "wide_deep_nn") else None,
-        "wide_mode": args.wide_mode if args.model == "wide_deep_nn" else None,
         "seeds": seeds,
         "n_seeds": len(seeds),
     }

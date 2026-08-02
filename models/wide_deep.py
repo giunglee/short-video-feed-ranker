@@ -108,12 +108,7 @@ class WideDeepNN(nn.Module):
     """
     Paper Wide & Deep: two towers, sum logits.
 
-      logit = wide_linear(wide_feats) + deep_mlp(embed || dense)
-
-    wide_mode controls what the wide Linear sees (deep always gets emb||dense):
-      dense_cross -- dense || crosses (paper default)
-      crosses     -- crosses only (ablate duplicated dense on wide)
-      dense       -- dense only (ablate crosses)
+      logit = wide_linear(crosses || dense) + deep_mlp(embed || dense)
     """
 
     def __init__(
@@ -121,33 +116,22 @@ class WideDeepNN(nn.Module):
         config: FeatureConfig,
         nn_dims: list[int] | None = None,
         dropout_ratio: float = 0.5,
-        wide_mode: str = "dense_cross",
     ):
         super().__init__()
-        if wide_mode not in ("dense_cross", "crosses", "dense"):
+        if not (
+            config.cross_feature_configs
+            and config.embedding_configs
+            and config.dense_configs
+        ):
             raise ValueError(
-                f"wide_mode must be dense_cross|crosses|dense, got {wide_mode!r}"
-            )
-        if not config.embedding_configs or not config.dense_configs:
-            raise ValueError(
-                "WideDeepNN expects embedding_configs and dense_configs (deep path)"
-            )
-        if wide_mode in ("dense_cross", "crosses") and not config.cross_feature_configs:
-            raise ValueError(
-                f"wide_mode={wide_mode} requires cross_feature_configs"
+                "WideDeepNN expects cross_feature_configs, embedding_configs, "
+                "and dense_configs"
             )
         self.config = config
-        self.wide_mode = wide_mode
         self.dense_encoder = DenseFeatureEncoder(config.dense_configs)
         self.cross_encoder = CrossFeatureEncoder(config.cross_feature_configs)
         self.embedding_encoder = EmbeddingEncoder(config.embedding_configs)
-        if wide_mode == "dense_cross":
-            wide_dim = config.dense_dims + config.cross_feature_dims
-        elif wide_mode == "crosses":
-            wide_dim = config.cross_feature_dims
-        else:
-            wide_dim = config.dense_dims
-        self.wide_linear = nn.Linear(wide_dim, 1)
+        self.wide_linear = nn.Linear(config.wide_input_dims, 1)
         if nn_dims is None:
             nn_dims = [config.deep_input_dims, 16, 8, 1]
         if nn_dims[-1] != 1:
@@ -156,15 +140,10 @@ class WideDeepNN(nn.Module):
 
     def forward(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         dense = self.dense_encoder({n: features[n] for n in self.config.dense_cols})
+        crosses = self.cross_encoder(
+            {n: features[n] for n in self.config.cross_feature_cols}
+        )
         emb = self.embedding_encoder({n: features[n] for n in self.config.embedding_cols})
-        wide_parts: list[torch.Tensor] = []
-        if self.wide_mode in ("dense_cross", "dense"):
-            wide_parts.append(dense)
-        if self.wide_mode in ("dense_cross", "crosses"):
-            crosses = self.cross_encoder(
-                {n: features[n] for n in self.config.cross_feature_cols}
-            )
-            wide_parts.append(crosses)
-        wide_logit = self.wide_linear(torch.cat(wide_parts, dim=-1))
+        wide_logit = self.wide_linear(torch.cat([dense, crosses], dim=-1))
         deep_logit = self.deep_mlp(torch.cat([dense, emb], dim=-1))
         return wide_logit + deep_logit
