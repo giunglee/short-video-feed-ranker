@@ -155,15 +155,31 @@ def _dense() -> list[DenseFeatureConfig]:
     return [DenseFeatureConfig(name=c, normalize=True) for c in DENSE_COLS]
 
 
-def _embed_cats() -> list[EmbeddingFeatureConfig]:
-    """IDs + categoricals as embeddings (linear_reg / deep_nn)."""
-    ids = [
-        EmbeddingFeatureConfig(name=n, embedding_dim=d) for n, d in ID_COLS
-    ]
-    cats = [
-        EmbeddingFeatureConfig(name=c, embedding_dim=EMB_DIM) for c in CAT_COLS
-    ]
-    return ids + cats
+def _embed_ids() -> list[EmbeddingFeatureConfig]:
+    return [EmbeddingFeatureConfig(name=n, embedding_dim=d) for n, d in ID_COLS]
+
+
+def _embed_profile_cats() -> list[EmbeddingFeatureConfig]:
+    return [EmbeddingFeatureConfig(name=c, embedding_dim=EMB_DIM) for c in CAT_COLS]
+
+
+def _embed_cats(
+    mode: str = "all",
+) -> list[EmbeddingFeatureConfig]:
+    """Embedding tables for linear_reg / deep_nn.
+
+    mode:
+      all  — IDs + profile/context categoricals (default)
+      ids  — ID columns only (user/video/author/music/tag)
+      cats — profile/context categoricals only (no IDs)
+    """
+    if mode == "all":
+        return _embed_ids() + _embed_profile_cats()
+    if mode == "ids":
+        return _embed_ids()
+    if mode == "cats":
+        return _embed_profile_cats()
+    raise ValueError(f"Unknown emb mode={mode!r}; expected all|ids|cats")
 
 
 def _cross_features() -> list[CrossFeatureConfig]:
@@ -252,8 +268,11 @@ def deep_nn(
     epochs: int = 15,
     steps: int | None = None,
     compute_xauc: bool = True,
+    emb_mode: str = "all",
 ) -> tuple:
-    feat = FeatureConfig(embedding_configs=_embed_cats(), dense_configs=_dense())
+    feat = FeatureConfig(
+        embedding_configs=_embed_cats(emb_mode), dense_configs=_dense()
+    )
     ds, feat = _dataset(feat)
     dims = [feat.deep_input_dims, *(hidden_dims or DEEP_NN_DIMS_DEFAULT)]
     model = DeepNN(feat, dims, dropout_ratio)
@@ -268,16 +287,18 @@ def wide_deep_nn(
     epochs: int = 15,
     steps: int | None = None,
     compute_xauc: bool = True,
+    emb_mode: str = "all",
+    wide_mode: str = "dense_cross",
 ) -> tuple:
-    # wide: crosses + dense; deep: all cat emb + dense
+    # wide: per wide_mode; deep: emb (per emb_mode) + dense
     feat = FeatureConfig(
-        embedding_configs=_embed_cats(),
+        embedding_configs=_embed_cats(emb_mode),
         cross_feature_configs=_cross_features(),
         dense_configs=_dense(),
     )
     ds, feat = _dataset(feat)
     dims = [feat.deep_input_dims, *(hidden_dims or WIDE_DEEP_NN_DIMS_DEFAULT)]
-    model = WideDeepNN(feat, dims, dropout_ratio)
+    model = WideDeepNN(feat, dims, dropout_ratio, wide_mode=wide_mode)
     trainer = _trainer(model, ds, weight_decay, epochs, steps, compute_xauc).build()
     return trainer.fit(), trainer
 
@@ -291,6 +312,8 @@ def run_experiment(
     steps: int | None = None,
     compute_xauc: bool = True,
     seed: int = 42,
+    emb_mode: str = "all",
+    wide_mode: str = "dense_cross",
 ) -> dict:
     baseline = predict_mean()
     if model_name == "predict_mean":
@@ -308,17 +331,43 @@ def run_experiment(
     # L2; Wager, Wang & Liang 2013), not a distinct regularizer. weight_decay
     # /epochs/steps/compute_xauc apply uniformly to all 4 so ablations stay
     # apples-to-apples.
+    # emb_mode applies to deep_nn / wide_deep_nn (deep-tower embedding
+    # ablation). linear_reg / wide_nn keep their usual feature sets.
     is_mlp = model_name in ("deep_nn", "wide_deep_nn")
+    if emb_mode != "all" and model_name not in ("deep_nn", "wide_deep_nn"):
+        raise ValueError(
+            f"--emb-mode={emb_mode} is only supported for deep_nn/wide_deep_nn; "
+            f"got model={model_name}"
+        )
+    if wide_mode != "dense_cross" and model_name != "wide_deep_nn":
+        raise ValueError(
+            f"--wide-mode={wide_mode} is only supported for wide_deep_nn; "
+            f"got model={model_name}"
+        )
     runners = {
         "linear_reg": lambda: linear_reg(weight_decay, epochs, steps, compute_xauc),
         "wide_nn": lambda: wide_nn(weight_decay, epochs, steps, compute_xauc),
-        "deep_nn": lambda: deep_nn(hidden_dims, dropout_ratio, weight_decay, epochs, steps, compute_xauc),
-        "wide_deep_nn": lambda: wide_deep_nn(hidden_dims, dropout_ratio, weight_decay, epochs, steps, compute_xauc),
+        "deep_nn": lambda: deep_nn(
+            hidden_dims, dropout_ratio, weight_decay, epochs, steps, compute_xauc, emb_mode
+        ),
+        "wide_deep_nn": lambda: wide_deep_nn(
+            hidden_dims,
+            dropout_ratio,
+            weight_decay,
+            epochs,
+            steps,
+            compute_xauc,
+            emb_mode,
+            wide_mode,
+        ),
     }
     if model_name not in runners:
         raise ValueError(f"Unknown model_name={model_name}. Expected one of {sorted(['predict_mean', *runners])}")
 
     fit, trainer = runners[model_name]()
+    # Train metrics on the restored best-val checkpoint — used to tell
+    # underfit (train≈val, both high) from overfit (train≪val).
+    train = trainer.evaluate_split("train")
     val, test = trainer.evaluate_split("val"), trainer.evaluate_split("test")
     arch_dims = [
         trainer.model.config.deep_input_dims,  # type: ignore[union-attr]
@@ -335,6 +384,8 @@ def run_experiment(
         "epochs": epochs,
         "steps_per_epoch": steps_per_epoch_used,
         "nn_dims": arch_dims,
+        "emb_mode": emb_mode if is_mlp else None,
+        "wide_mode": wide_mode if model_name == "wide_deep_nn" else None,
         "dropout_ratio": dropout_ratio if is_mlp else None,
         "weight_decay": weight_decay,
         "baseline_val_mae": baseline["val_mae"],
@@ -345,6 +396,8 @@ def run_experiment(
         "best_val_mae": fit.best_val_mae,
         "best_epoch": fit.best_epoch,
         "restored_best_weights": fit.restored_best_weights,
+        "train_mae": train.mae,
+        "train_xauc": train.xauc,
         "val_xauc": fit.best_epoch_xauc,
         "test_loss": test.loss,
         "test_mae": test.mae,
@@ -419,6 +472,25 @@ def parse_args() -> argparse.Namespace:
         help="Sampled pairwise concordance metric (see training/metrics.py). "
         "Cheap; on by default. Use --no-compute-xauc to skip.",
     )
+    p.add_argument(
+        "--emb-mode",
+        choices=["all", "ids", "cats"],
+        default="all",
+        help="deep_nn / wide_deep_nn: which embedding tables the deep tower "
+        "uses. 'all' = IDs + profile/context cats (default); "
+        "'ids' = user/video/author/music/tag only; "
+        "'cats' = profile/context categoricals only (no IDs). "
+        "Wide path is controlled separately by --wide-mode.",
+    )
+    p.add_argument(
+        "--wide-mode",
+        choices=["dense_cross", "crosses", "dense"],
+        default="dense_cross",
+        help="wide_deep_nn only: features on the wide Linear. "
+        "'dense_cross' = dense||crosses (default); "
+        "'crosses' = crosses only; 'dense' = dense only. "
+        "Deep tower always gets emb||dense.",
+    )
     return p.parse_args()
 
 
@@ -436,6 +508,8 @@ if __name__ == "__main__":
         steps=args.steps,
         compute_xauc=args.compute_xauc,
         seed=args.seed,
+        emb_mode=args.emb_mode,
+        wide_mode=args.wide_mode,
     )
     print(f"RESULT_JSON: {json.dumps(summary, sort_keys=True)}")
     if args.output is not None:

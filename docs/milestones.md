@@ -72,43 +72,71 @@ candidates, not read as an absolute number; a model can have decent MAE while
 ranking badly, or vice versa (metric convention follows the KuaiRec benchmark
 paper and its watch-time-prediction follow-ups).
 
+Experiment entry points:
+- `experiments/wide_deep_kuairec.py` — single-seed run; `--emb-mode {all,ids,cats}`
+  for the deep tower, `--wide-mode {dense_cross,crosses,dense}` for the wide
+  Linear on `wide_deep_nn`.
+- `experiments/multi_seed.py` — same config across seeds 42–46 (or custom),
+  reports mean ± std so a val gap can be checked against seed noise.
+
 **Methodology note:** every result below reports both val and test MAE/XAUC, but
 model/hyperparameter selection is driven by **val only** — test is logged purely
 as a monitoring signal (and it earned its place: the bug above was first visible
-as a test-only MAE blowup, not something selection was tuned to catch).
+as a test-only MAE blowup, not something selection was tuned to catch). Final
+table rows are multi-seed; ablation cells that say “seed 42” are directional.
 
 ### 4. Results (best config per model, selected by val MAE)
 
-| Model | val MAE | val XAUC | test MAE | test XAUC |
-|---|---|---|---|---|
-| predict-mean baseline | 0.488 | – | 0.523 | – |
-| `linear_reg` | 0.365 | 0.711 | 0.431 | 0.679 |
-| `wide_nn` | 0.364 | 0.732 | 0.411 | 0.721 |
-| `deep_nn` | 0.363 | 0.708 | 0.440 | 0.664 |
-| **`wide_deep_nn`** (`256→64→8→1`, dropout 0.3) | **0.339** | **0.746** | 0.402 | 0.720 |
+After the ID-embedding ablation (see learnings): deep / W&D deep-tower use
+**profile/context cats + dense only** (no raw `user_id` / `video_id` / …).
+`wide_nn` never used IDs. `linear_reg` still includes IDs (not re-tuned).
+All rows: mean ± std over seeds 42–46.
 
-All four learned models beat the predict-mean baseline on both val and test.
-Single seed — multi-seed variance check is an open follow-up before treating any
-one config as *the* answer rather than *a* good one.
+| Model | config | val MAE | val XAUC | test MAE | test XAUC |
+|---|---|---|---|---|---|
+| predict-mean baseline | – | 0.488 | – | 0.523 | – |
+| `linear_reg` | emb=all, wd 1e-4 | 0.366 ± 0.001 | 0.711 ± 0.002 | 0.432 ± 0.004 | 0.678 ± 0.004 |
+| `wide_nn` | dense + crosses | 0.364 ± 0.000 | 0.732 ± 0.001 | 0.411 ± 0.000 | 0.723 ± 0.001 |
+| **`deep_nn`** | `128→32→8→1`, emb=**cats**, drop 0 | **0.321 ± 0.000** | **0.758 ± 0.001** | **0.369 ± 0.001** | **0.745 ± 0.001** |
+| **`wide_deep_nn`** | `256→64→8→1`, drop **0**, emb=**cats** | **0.321 ± 0.001** | **0.759 ± 0.001** | **0.370 ± 0.001** | **0.745 ± 0.001** |
+
+(Earlier W&D cats multi-seed used drop 0.3 → val 0.334 / test 0.380 — unfair vs
+deep's drop 0. Matching dropout closes the gap.)
+
+Ordering after dropping raw IDs + matched dropout: **deep ≈ W&D ≫ wide > linear**
+on val MAE. Wide-path ablations (`dense_cross` / `crosses` / `dense`) at seed 42
+are within ~0.001 — crosses add little once the deep tower is healthy; keep
+`dense_cross` as the paper-default joint stack.
 
 ### 5. Learnings worth remembering
 
-- **`wide&deep > deep ≈ wide > linear`** here, matching the paper's own ordering
-  directionally. Worth being precise about what the paper actually reports
-  though (Table 1, Google Play app-store ranker): **offline AUC** wide edges deep
-  (0.726 vs 0.722), but **online acquisition gain** deep edges wide (+2.9% vs 0%
-  control) — Wide & Deep wins on both. "Deep beats wide" isn't universally true
-  even in the source paper; it depends which metric and which regime.
+- On this split the final ranking is **deep ≈ W&D ≫ wide > linear** (matched
+  dropout, no raw IDs). The paper's own ordering is worth citing carefully
+  (Table 1, Google Play): **offline AUC** wide edges deep (0.726 vs 0.722), but
+  **online acquisition** deep edges wide (+2.9% vs 0% control) — Wide & Deep
+  wins on both. "Deep beats wide" isn't universally true even in the source
+  paper; it depends which metric and which regime.
 - Architecture size should track data/feature scale, not habit: a narrower/shallower
   `wide_deep_nn` (`256,64,8,1`) outperformed a wider/deeper one (`512,128,32,8,1`)
   on this dataset once training was actually covering full epochs correctly.
-- Regularization isn't universally helpful — dropout that clearly helped
-  `wide_deep_nn` made `deep_nn` strictly worse on val MAE at every setting tried.
-  Same knob, opposite verdicts, on two closely related architectures.
+- Regularization isn't universally helpful — with emb=all (IDs), dropout helped
+  `wide_deep_nn` and hurt `deep_nn`. After dropping IDs, matching W&D to deep's
+  drop=0 erases nearly all of the remaining MAE gap; the earlier “deep > W&D”
+  ranking was partly an unfair hyperparameter comparison.
 - A training-loop bug (partial epoch coverage from per-step resampling) was
   larger in effect than most of the hyperparameter changes tried on top of it —
   worth fixing infra correctness before reading too much into a hyperparameter
   sweep's results.
+- **Temporal item cold-start kills raw ID embeddings.** Users are 100% shared
+  across train/val/test on KuaiRec-small, but ~77% of test rows (and ~45% of val)
+  have a `video_id` never seen in train. Deep with IDs: train≪val, weak test
+  XAUC; IDs-only → XAUC 0.5 (random). Dropping IDs (profile/context cats + dense)
+  fixed deep (test MAE 0.369 / XAUC 0.745) and also improved W&D (val 0.337 /
+  test 0.383 vs 0.340 / 0.402 with IDs). W&D still looked strong *with* IDs
+  mainly because the **wide** path (dense + crosses) does not use IDs and
+  transfers under the temporal split. Emb-dim tweaks would not fix OOV items —
+  production systems route around cold items with content/side features, explore,
+  and continual ID updates, not larger ID tables.
 
 **Next:** MMoE multitask (KuaiRand-Pure) — see the model progression table in the
 [README](../README.md).
