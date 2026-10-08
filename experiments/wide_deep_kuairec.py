@@ -38,13 +38,7 @@ ID_DIM = 16
 
 WIDE_CROSS_COLS = [spec["name"] for spec in WIDE_CROSS_SPECS]
 
-# Duplicate/constant columns dropped per data/kuairec_eda_findings.md
-# (Cramer's V + bijective crosstab check): is_live_streamer (== is_live_author)
-# and user_onehot_feat{0,1,2,3,5,6,7,8,9,10,11} (anonymized re-encodings of
-# gender/age_range/phone_*/fre_*/platform, kept the human-readable column
-# instead). is_video_author/is_photo_author are bijective in this sample too
-# but semantically distinct, so both are kept pending a check on a larger
-# dataset.
+# Duplicates/constants dropped per data/kuairec_eda_findings.md.
 CAT_COLS = [
     "gender",
     "age_range",
@@ -134,20 +128,12 @@ DENSE_COLS = [
     "video_daily_share_user_num",
     "video_daily_download_cnt",
     "video_daily_download_user_num",
-    # report_cnt / reduce_similar_cnt were previously (incorrectly) excluded
-    # as "high NaN" -- that was an artifact of the date-parsing bug in
-    # KuaiRecPreprocessor._extract (fixed; see data/kuairec_eda_findings.md).
-    # Both are 0% null post-fix, re-added.
+    # report/reduce_similar: re-added after ETL date-parse fix (see eda findings).
     "video_daily_report_cnt",
     "video_daily_report_user_num",
     "video_daily_reduce_similar_cnt",
     "video_daily_reduce_similar_user_num",
-    # video_daily_collect_cnt / cancel_collect_{cnt,user_num} / collect_user_num
-    # dropped: KuaiRec started tracking "collect" (bookmark) actions partway
-    # through the collection window (2020-07-05 - 2020-07-27 = 100% null in
-    # item_daily_features.csv), so they're ~49% null in train (which covers
-    # that period) vs 0% in val/test -- a real dataset characteristic, not an
-    # ETL bug. Revisit with an explicit missing-indicator if needed later.
+    # collect_* dropped: late rollout → high null in train only (dataset quirk).
 ]
 
 
@@ -322,15 +308,7 @@ def run_experiment(
             "beats_baseline_test": True,
         }
 
-    # dropout_ratio only applies to deep_nn/wide_deep_nn's MLP hidden layers
-    # -- linear_reg/wide_nn are single Linear layers with no hidden units,
-    # so input dropout there would just be a noisier version of
-    # weight_decay (dropout on a linear model is first-order equivalent to
-    # L2; Wager, Wang & Liang 2013), not a distinct regularizer. weight_decay
-    # /epochs/steps/compute_xauc apply uniformly to all 4 so ablations stay
-    # apples-to-apples.
-    # emb_mode applies to deep_nn / wide_deep_nn (deep-tower embedding
-    # ablation). linear_reg / wide_nn keep their usual feature sets.
+    # dropout / emb_mode only for MLP towers; linear/wide stay as-is.
     is_mlp = model_name in ("deep_nn", "wide_deep_nn")
     if emb_mode != "all" and model_name not in ("deep_nn", "wide_deep_nn"):
         raise ValueError(

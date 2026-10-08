@@ -1,16 +1,7 @@
-"""
-Multi-seed variance check for one Wide & Deep config.
+"""Multi-seed variance check for one Wide & Deep config (mean ± std).
 
-A single seed's val MAE/XAUC gap between two configs can just be that
-seed's noise (weight init, dropout masks, train-batch shuffling all derive
-from torch.manual_seed/np.random.seed -- see wide_deep_kuairec.parse_args).
-This runs the *same* config across several seeds and reports mean +/- std
-per metric, so a "winner" from the ablation sweep can be checked before
-treating it as the answer rather than a plausible one.
-
-Run from repo root, e.g.:
-  python -m experiments.multi_seed --model wide_deep_nn --nn-dims 256,64,8,1 \
-      --dropout 0 --emb-mode cats --seeds 42,43,44,45,46 \
+  python -m experiments.multi_seed --model wide_deep_nn --nn-dims 256,64,8,1 \\
+      --dropout 0 --emb-mode cats --seeds 42,43,44,45,46 \\
       --output artifacts/wide_deep_m1/wd_wide_path/wd_cats_drop0.json
 """
 from __future__ import annotations
@@ -24,8 +15,6 @@ import torch
 
 from experiments.wide_deep_kuairec import run_experiment
 
-# What to aggregate across seeds. best_val_mae/val_xauc are what selection
-# should use; test_* is logged for monitoring only (see run_experiment).
 METRICS = ["best_val_mae", "val_xauc", "test_mae", "test_xauc"]
 
 
@@ -47,14 +36,7 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="deep_nn / wide_deep_nn embedding tables (see wide_deep_kuairec).",
     )
-    p.add_argument(
-        "--seeds",
-        type=str,
-        default="42,43,44,45,46",
-        help="Comma-separated seeds. 5 is a reasonable minimum to get a "
-        "usable std estimate without the sweep taking too long; go higher "
-        "if a decision hinges on a close call.",
-    )
+    p.add_argument("--seeds", type=str, default="42,43,44,45,46")
     p.add_argument("--output", type=Path, default=None)
     return p.parse_args()
 
@@ -66,9 +48,6 @@ def main() -> None:
 
     runs = []
     for seed in seeds:
-        # Same global-RNG contract as wide_deep_kuairec.__main__: seed
-        # everything once per run, before model construction and dataset
-        # shuffling both draw from it.
         torch.manual_seed(seed)
         np.random.seed(seed)
         result = run_experiment(
@@ -101,8 +80,6 @@ def main() -> None:
     for metric in METRICS:
         vals = np.array([r[metric] for r in runs], dtype=float)
         summary[f"{metric}_mean"] = float(vals.mean())
-        # Sample std (ddof=1) -- undefined for n=1, reported as 0.0 rather
-        # than NaN so downstream JSON consumers don't need a special case.
         summary[f"{metric}_std"] = float(vals.std(ddof=1)) if len(vals) > 1 else 0.0
     summary["runs"] = runs
 

@@ -146,11 +146,7 @@ class KuaiRecPreprocessor:
             print(f"Error: The CSV {self.raw_data_dir} is unparsable due to data formatting flaws.")
             raise
     
-        # ~3.9% of rows have a genuinely missing date/timestamp in the raw
-        # file. Drop them before anything else: left in, they (a) can't be
-        # date-joined to items below and (b) all land in the `test` split
-        # later (df.sort_values(by="timestamp") pushes NaN to the tail via
-        # the pandas default na_position="last"), corrupting test-only.
+        # Drop missing date/timestamp (~3.9%): else they NaN-sort into test.
         n_before = len(base)
         base = base.dropna(subset=["date", "timestamp"])
         n_dropped = n_before - len(base)
@@ -162,14 +158,10 @@ class KuaiRecPreprocessor:
         users["user_id"] = users["user_id"].astype("int64")
         users_raw["user_id"] = users_raw["user_id"].astype("int64")
         items["video_id"] = items["video_id"].astype("int64")
-        # date is YYYYMMDD encoded as a number (e.g. 20200705.0 / 20200705),
-        # not a date string -- pd.to_datetime() on a raw numeric column reads
-        # it as ns-since-epoch and silently collapses every row to
-        # 1970-01-01. Force the real format instead.
+        # YYYYMMDD as int — must format="%Y%m%d" (raw int → ns-since-epoch bug).
         base["date"] = pd.to_datetime(base["date"].astype("int64").astype(str), format="%Y%m%d")
         items["date"] = pd.to_datetime(items["date"].astype("int64").astype(str), format="%Y%m%d")
-        
-        # Deduplicate right tables on the join key
+
         users = users.drop_duplicates(subset=["user_id"], keep="last")
         users_raw = users_raw.drop_duplicates(subset=["user_id"], keep="last")
         items = items.drop_duplicates(subset=["video_id", "date"], keep="last")
@@ -182,13 +174,7 @@ class KuaiRecPreprocessor:
             "fre_city_level", "fre_community_type",
             "platform", "os_version", "app_version", "app_download_channel", "isp",
         ]]
-        # `video_duration` also exists on `base` (the interaction matrix, kept
-        # as the label-adjacent dense feature in schema.py) -- drop the item
-        # table's copy so the merge below doesn't produce a duplicate/suffixed
-        # column. `video_tag_name` is a free-text label of `video_tag_id`
-        # (e.g. "JianZhu" for tag_id 841); the ID is already kept as the
-        # sparse/embedding feature, so the redundant string is dropped rather
-        # than adding an unencoded high-cardinality text column.
+        # Drop item copies already on base / redundant with video_tag_id.
         items = items.drop(columns=["video_duration", "video_tag_name"])
         items = items.rename(columns={
             "show_cnt": "video_daily_show_cnt",
@@ -308,12 +294,7 @@ class KuaiRecPreprocessor:
     def _id_to_embedding_idx(
         self, df: pd.DataFrame, cols: list[str]
     ) -> dict[str, int]:
-        """
-        Map raw categorical IDs -> contiguous embedding indices.
-
-        Index 0 is reserved for missing (NaN after left joins).
-        Real IDs map to 1..K. Returned value is nn.Embedding vocab size (= K + 1).
-        """
+        """Map raw IDs → 1..K for embeddings; 0 = missing. Returns vocab size (= K+1)."""
         vocab_size: dict[str, int] = {}
         for col in cols:
             codes, _ = pd.factorize(df[col], sort=True)

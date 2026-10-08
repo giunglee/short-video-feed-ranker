@@ -30,31 +30,21 @@ from training.optimizer import build_optimizer, OptimizerConfig
 class TrainConfig:
     batch_size: int = 100
     epochs: int = 100
-    # None = one full shuffled pass over the train split per epoch (steps
-    # auto-computed as len(train) // batch_size). Set to an int to cap each
-    # epoch at fewer batches (e.g. for a quick smoke test on a big dataset).
+    # None = full shuffled epoch; int = cap batches/epoch.
     steps: int | None = 10
     eval_batch_size: int = 4096
     device: torch.device = (
         torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
     )
     optimizer_config: OptimizerConfig = OptimizerConfig()
-    # Regression (watch_ratio): compute_auc=False. Binary CTR: compute_auc=True.
+    # AUC for binary CTR; XAUC for continuous rank concordance (see metrics.py).
     compute_auc: bool = False
-    # Pairwise ranking-concordance metric for continuous regression targets
-    # (see training/metrics.py). Cheap (fixed sample size), safe to leave on.
     compute_xauc: bool = False
     xauc_num_pairs: int = 100_000
     xauc_seed: int = 0
     primary_metric: Literal["mae", "auc"] = "mae"
     show_plots: bool = False
-    # If True, restore the model's weights from the epoch with the best
-    # primary_metric on val before returning from fit() (and before any
-    # subsequent evaluate_split("test") call). Without this, self.model ends
-    # fit() holding whichever epoch happened to run *last* -- which is fine
-    # if val is still improving at the final epoch, but silently returns an
-    # overfit/worse checkpoint if val degrades in later epochs (e.g. after
-    # increasing `epochs` without also re-checking for overfitting).
+    # Restore best-on-val weights at end of fit() (not last epoch).
     restore_best_weights: bool = True
 
 
@@ -77,10 +67,7 @@ class FitSummary:
     xaucs: list[float] = None  # type: ignore[assignment]
     best_epoch: int = -1
     restored_best_weights: bool = False
-    # AUC/XAUC recorded *at* best_epoch (the restored checkpoint) -- not the
-    # same as best_val_auc/best_val_xauc below when primary_metric="mae",
-    # since those track each metric's own best epoch, which may differ from
-    # the epoch actually selected/restored by primary_metric.
+    # Metrics at the restored (primary_metric) checkpoint.
     best_epoch_auc: float | None = None
     best_epoch_xauc: float | None = None
 
@@ -168,11 +155,7 @@ class Trainer:
             weight_norm_accum = 0.0
 
             self.model.train()
-            # One shuffled pass over train per epoch (no replacement within
-            # the epoch) unless config.steps caps it shorter -- guarantees
-            # full data coverage per epoch, unlike resampling a fresh random
-            # batch each step (IID with replacement across the whole run,
-            # which under-covers the data at a fixed step budget).
+            # Full shuffled epoch (no replacement); steps may cap length.
             train_iter = self.data_loader.epoch_batches(
                 self.config.batch_size, split="train"
             )
