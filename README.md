@@ -1,46 +1,81 @@
 # short-video-feed-ranker
 
-From-scratch **short-video feed ranking** in PyTorch — paper-based reimplementations
-along the classic stack: baseline pointwise ranker → multi-task MMoE → long-sequence
-attention (DIN / SIM), with an **additive** sequential recall path (SASRec → FAISS).
-
-Trained on public [KuaiRec](https://kuairec.com/) and [KuaiRand](https://kuairand.com/).
+A public PyTorch study of **recommendation, ranking, and incremental value**.
+Implement core modeling patterns from public papers, then explain their tensor
+flow, trade-offs, and failure modes through a small number of finished experiments.
 Educational only — not affiliated with any employer.
 
-## Model progression (primary — Rank)
+## Current work
 
-| Status | Stage | Model | Paper | Dataset |
-|--------|-------|-------|-------|---------|
-| ✅ done | Baseline ranker | Wide & Deep | [Cheng et al., DLRS 2016](https://arxiv.org/abs/1606.07792) | KuaiRec |
-| ⬜ next | Multitask | MMoE | [Ma et al., KDD 2018](https://dl.acm.org/doi/10.1145/3219819.3220007) | KuaiRand-Pure |
-| ⬜ | Task balancing | GradNorm | [Chen et al., ICML 2018](https://proceedings.mlr.press/v80/chen18a.html) | KuaiRand-Pure |
-| ⬜ | Sequence attention | DIN | [Zhou et al., KDD 2018](https://arxiv.org/abs/1706.06978) | KuaiRand-1K |
-| ⬜ | Long-sequence search | SIM | [Pi et al., KDD 2020](https://arxiv.org/abs/2006.05639) | KuaiRand-1K |
+Correct the Wide & Deep experiment: EDA → big-matrix train/validation protocol →
+trainer diagnostics → multi-seed comparison → small-matrix test evaluation.
+The current training code still uses the old protocol; corrected runs have not begun.
+Historical small-matrix results are archived locally. Recall code is paused.
 
-## Additive — Recall + offline eval
+## Read the active code in this order
 
-| Status | Stage | Method | Paper / tool | Dataset |
-|--------|-------|--------|--------------|---------|
-| ⬜ | Sequential recall | SASRec → FAISS Top-K | [Kang & McAuley, ICDM 2018](https://arxiv.org/abs/1808.09781) | KuaiRand-1K |
-| ⬜ | Bias-aware eval | IPS on random exposure | [Schnabel et al., RecSys 2016](https://arxiv.org/abs/1602.05352) | KuaiRand-Pure |
+1. `data/config.py` — feature and label contracts.
+2. `models/components/feature_encoder.py`, `models/components/mlp.py` — tensors.
+3. `models/wide_deep.py` — wide/deep paths and their summed prediction.
+4. `data/kuairec_preprocessor.py`, `data/kuairec_dataset.py` — existing data path.
+5. `training/trainer.py`, `training/metrics.py` — one training run and evaluation.
+6. `experiments/wide_deep_kuairec.py`, `experiments/multi_seed.py` — orchestration.
 
-Rank metrics: **AUC / MAE**. Recall metrics: **Recall@K / NDCG@K**.
+We will revise these in small steps, explaining inputs, outputs, and decisions.
 
-Each model is a standalone `nn.Module` with a cited paper docstring, shape-tested
-before training on real data. Full build log, per-phase: [`docs/milestones.md`](docs/milestones.md).
+## Learning progression
+
+One experiment at a time; later stages are planned, not implemented.
+
+1. **Feature-based Ranking — protocol correction in progress.** Sparse/dense features, embeddings,
+   generalization, temporal evaluation. Reference:
+   [Wide & Deep](https://arxiv.org/abs/1606.07792).
+2. **Candidate Retrieval — after the ranking correction.** One learned retrieval implementation:
+   negative sampling, retrieval metrics, and the Recall → Rank funnel.
+   Keep popularity and item-cooccurrence as fixed comparisons. Reference:
+   [YouTube DNN](https://research.google/pubs/pub45530/).
+3. **Multi-task Ranking — planned.** Shared-bottom vs MMoE: which tasks benefit
+   or regress? GradNorm only for a concrete loss-balancing question. References:
+   [MMoE](https://dl.acm.org/doi/10.1145/3219819.3220007), optional
+   [GradNorm](https://proceedings.mlr.press/v80/chen18a.html).
+4. **Behavior-conditioned Ranking — planned.** Pooling vs candidate-aware
+   attention, analyzed by history length and user activity. Reference:
+   [DIN](https://arxiv.org/abs/1706.06978).
+5. **Sequential Representation — planned.** Candidate-independent self-attention
+   vs candidate-conditioned behavior under comparable scoring heads. Reference:
+   [SASRec](https://arxiv.org/abs/1808.09781).
+6. **Relational/Subgraph Ranking — later.** Does public relational context add
+   signal beyond behavior history? Validate available relations first. Reference:
+   [Neural Graph Pattern Machine](https://arxiv.org/abs/2501.18739).
+7. **Incremental-value Modeling — later.** Causal Forest + XNet (exact XNet
+   public reference to be resolved before implementation). Define treatment,
+   outcome, assumptions, and policy evaluation first. Reference:
+   [Causal Forest](https://arxiv.org/abs/1510.04342).
+
+GraphSAGE/PinSage and other uplift methods are references, not extra milestones.
+Generative recommendation is a reading stream outside this implementation plan.
+
+## Data and experiment standard
+
+Use public [KuaiRec](https://kuairec.com/) primarily for ranking/retrieval.
+For questions requiring randomized exposure, use an appropriate randomized subset
+of [KuaiRand](https://kuairand.com/) or another suitable dataset, with explicit
+treatment/outcome definitions. Density alone does not establish a causal experiment.
+
+Each experiment states its question, baseline, change, gains/regressions, and
+limitations. Explain shapes, attention semantics, loss, and masking/sampling;
+check synthetic forward/backward behavior before real runs. Select on validation;
+reserve test for final evaluation. Historical practices are recorded in milestones.
 
 ## What's implemented
 
-- **`data/kuairec_preprocessor.py`, `data/kuairec_dataset.py`** — KuaiRec ETL
-  (temporal split) + parquet reader/batcher
-- **`models/wide_deep.py`, `training/`, `experiments/wide_deep_kuairec.py`** —
-  Wide & Deep (+ its ablations) on KuaiRec, `watch_ratio` regression
-- **`data/scripts/download_datasets.py`** — local download helper for KuaiRec / KuaiRand
+- KuaiRec temporal ETL and batches: `data/kuairec_preprocessor.py`,
+  `data/kuairec_dataset.py`.
+- Wide & Deep, baselines, training, and multi-seed experiments:
+  `models/wide_deep.py`, `training/`, `experiments/wide_deep_kuairec.py`.
+- Dataset download helper: `data/scripts/download_datasets.py`.
 
-Model and training code for later stages (MMoE onward) are added incrementally
-as each paper is implemented — see [`docs/milestones.md`](docs/milestones.md).
-
-## Quick start
+## Existing runner (legacy protocol)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -58,7 +93,7 @@ Build log: [`docs/milestones.md`](docs/milestones.md)
 ## Stack
 
 PyTorch `nn.Module` for models; `pandas` / `numpy` only in data loaders;
-`torch.optim.AdamW` for training; FAISS when the recall stage lands.
+`torch.optim.AdamW` for training.
 
 ## License
 
