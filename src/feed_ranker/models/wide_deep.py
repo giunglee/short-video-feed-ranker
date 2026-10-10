@@ -9,7 +9,7 @@ Link:  https://arxiv.org/abs/1606.07792
   DeepNN           — embeddings + dense → MLP (paper-deep)
   WideDeepNN       — wide_logit + deep_logit (paper W&D; sum, not one shared head)
 
-Prerequisites: components/feature_encoder.py, components/mlp.py, training/trainer.py
+Inputs are named [B] tensors; each model returns regression predictions [B, 1].
 """
 
 from __future__ import annotations
@@ -17,18 +17,18 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from data.config import FeatureConfig
-from models.components.feature_encoder import (
+from feed_ranker.data.config import FeatureConfig
+from feed_ranker.models.components.feature_encoder import (
     CrossFeatureEncoder,
     DenseFeatureEncoder,
     EmbeddingEncoder,
 )
-from models.components.mlp import MLP
+from feed_ranker.models.components.mlp import MLP
 
 
 class LinearRegression(nn.Module):
     """
-    Simplest baseline: embeddings + dense → one Linear.
+    Linear baseline for Cheng et al. (2016): embeddings + dense → one Linear.
     Cross binaries belong on the wide path.
     """
 
@@ -37,7 +37,7 @@ class LinearRegression(nn.Module):
         input_dim: int,
         output_dim: int,
         config: FeatureConfig,
-    ):
+    ) -> None:
         super().__init__()
         if not config.embedding_configs or not config.dense_configs:
             raise ValueError("LinearRegression expects embedding_configs and dense_configs")
@@ -53,19 +53,17 @@ class LinearRegression(nn.Module):
 
 
 class WideNN(nn.Module):
-    """Paper-wide: sparse binary crosses + dense → Linear."""
+    """Cheng et al. (2016), Wide & Deep: optional crosses + dense → Linear."""
 
     def __init__(
         self,
         input_dim: int,
         output_dim: int,
         config: FeatureConfig,
-    ):
+    ) -> None:
         super().__init__()
-        if not config.cross_feature_configs or not config.dense_configs:
-            raise ValueError(
-                "WideNN expects cross_feature_configs and dense_configs"
-            )
+        if not config.dense_configs:
+            raise ValueError("WideNN expects dense_configs")
         self.config = config
         self.dense_encoder = DenseFeatureEncoder(config.dense_configs)
         self.cross_encoder = CrossFeatureEncoder(config.cross_feature_configs)
@@ -73,21 +71,24 @@ class WideNN(nn.Module):
 
     def forward(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         dense = self.dense_encoder({n: features[n] for n in self.config.dense_cols})
-        crosses = self.cross_encoder(
-            {n: features[n] for n in self.config.cross_feature_cols}
-        )
+        if self.config.cross_feature_cols:
+            crosses = self.cross_encoder(
+                {name: features[name] for name in self.config.cross_feature_cols}
+            )
+        else:
+            crosses = dense.new_empty((dense.shape[0], 0))
         return self.linear(torch.cat([dense, crosses], dim=-1))
 
 
 class DeepNN(nn.Module):
-    """Paper-deep: embeddings + dense → MLP."""
+    """Cheng et al. (2016), Wide & Deep: embeddings + dense → MLP."""
 
     def __init__(
         self,
         config: FeatureConfig,
         nn_dims: list[int] | None = None,
         dropout_ratio: float = 0.5,
-    ):
+    ) -> None:
         super().__init__()
         if not config.embedding_configs or not config.dense_configs:
             raise ValueError("DeepNN expects embedding_configs and dense_configs")
@@ -106,7 +107,7 @@ class DeepNN(nn.Module):
 
 class WideDeepNN(nn.Module):
     """
-    Paper Wide & Deep: two towers, sum logits.
+    Cheng et al. (2016), Wide & Deep: two towers, sum logits.
 
       logit = wide_linear(crosses || dense) + deep_mlp(embed || dense)
     """
@@ -116,17 +117,10 @@ class WideDeepNN(nn.Module):
         config: FeatureConfig,
         nn_dims: list[int] | None = None,
         dropout_ratio: float = 0.5,
-    ):
+    ) -> None:
         super().__init__()
-        if not (
-            config.cross_feature_configs
-            and config.embedding_configs
-            and config.dense_configs
-        ):
-            raise ValueError(
-                "WideDeepNN expects cross_feature_configs, embedding_configs, "
-                "and dense_configs"
-            )
+        if not config.embedding_configs or not config.dense_configs:
+            raise ValueError("WideDeepNN expects embedding_configs and dense_configs")
         self.config = config
         self.dense_encoder = DenseFeatureEncoder(config.dense_configs)
         self.cross_encoder = CrossFeatureEncoder(config.cross_feature_configs)
@@ -140,9 +134,12 @@ class WideDeepNN(nn.Module):
 
     def forward(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         dense = self.dense_encoder({n: features[n] for n in self.config.dense_cols})
-        crosses = self.cross_encoder(
-            {n: features[n] for n in self.config.cross_feature_cols}
-        )
+        if self.config.cross_feature_cols:
+            crosses = self.cross_encoder(
+                {name: features[name] for name in self.config.cross_feature_cols}
+            )
+        else:
+            crosses = dense.new_empty((dense.shape[0], 0))
         emb = self.embedding_encoder({n: features[n] for n in self.config.embedding_cols})
         wide_logit = self.wide_linear(torch.cat([dense, crosses], dim=-1))
         deep_logit = self.deep_mlp(torch.cat([dense, emb], dim=-1))
