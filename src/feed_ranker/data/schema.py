@@ -22,8 +22,14 @@ MATRIX_COLUMNS = [*KEYS, LABEL, "video_duration"]
 PROTOCOL = "big-to-small-v1"
 
 
-class RecommendationBatch(TypedDict):
-    """Features/labels are [B]; raw IDs identify rows independently of encoded IDs."""
+class _OptionalBatchFields(TypedDict, total=False):
+    pair_weight: torch.Tensor
+
+
+class RecommendationBatch(_OptionalBatchFields):
+    """Features/labels are [B].
+
+    Raw IDs identify rows independently of encoded IDs; optional pair weights are [B]."""
 
     feature: dict[str, torch.Tensor]
     label: torch.Tensor

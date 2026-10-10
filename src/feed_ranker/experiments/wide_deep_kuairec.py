@@ -174,6 +174,8 @@ def _restore_for_test(
 
 
 def build_trainer(model: nn.Module, dataset: KuaiRecDataset, config: TrainConfig) -> Trainer:
+    if config.weighting == "pair" and not dataset.has_pair_weights:
+        raise ValueError("Pair weighting requires signature-dedup-v2 prepared data")
     losses = {"mae": nn.L1Loss, "mse": nn.MSELoss, "smooth_l1": nn.SmoothL1Loss}
     evaluator = RegressionEvaluator(
         loaders={split: dataset.loader(split, config.eval_batch_size) for split in ("val", "test")},
@@ -187,7 +189,7 @@ def build_trainer(model: nn.Module, dataset: KuaiRecDataset, config: TrainConfig
         model,
         lambda epoch: dataset.loader("train", config.batch_size, config.seed + epoch),
         config,
-        loss_fn=losses[config.loss](),
+        loss_fn=losses[config.loss](reduction="none" if config.weighting == "pair" else "mean"),
         evaluator=evaluator,
     )
 
@@ -207,6 +209,7 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--steps", type=int, help="Exploratory smoke run only")
     parser.add_argument("--no-ids", action="store_true")
+    parser.add_argument("--weighting", choices=("event", "pair"), default="event")
     parser.add_argument("--loss", choices=("mae", "mse", "smooth_l1"), default="mae")
     parser.add_argument(
         "--metrics", nargs="+", choices=METRICS, default=["mae", "xauc", "user_xauc"]
@@ -224,6 +227,7 @@ def config_from_args(args: argparse.Namespace, seed: int) -> TrainConfig:
         steps=args.steps,
         optimizer=OptimizerConfig(lr=args.lr, weight_decay=args.weight_decay),
         loss=args.loss,
+        weighting=getattr(args, "weighting", "event"),
         metrics=tuple(args.metrics),
         selection_metric=args.selection_metric,
         selection_mode=args.selection_mode,

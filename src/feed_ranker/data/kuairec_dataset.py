@@ -34,6 +34,9 @@ class KuaiRecDataset:
         if self.meta.get("protocol") != PROTOCOL:
             raise ValueError("Expected big-to-small data; legacy extracts are not compatible")
         self._columns = list(dict.fromkeys([*config.columns, "raw_user_id", "raw_video_id"]))
+        self.has_pair_weights = self.meta.get("preprocessing_version") == "signature-dedup-v2"
+        if self.has_pair_weights:
+            self._columns.append("pair_weight")
         self._train: pd.DataFrame | None = None
 
     def vocab_size(self) -> dict[str, int]:
@@ -78,7 +81,7 @@ class KuaiRecDataset:
         if not np.isfinite(labels).all():
             raise ValueError("Invalid labels; never impute outcomes")
         user_ids = frame["raw_user_id"].to_numpy(dtype=np.int64, copy=True)
-        return {
+        result: RecommendationBatch = {
             "feature": features,
             "label": torch.from_numpy(labels),
             "raw_user_id": torch.from_numpy(user_ids),
@@ -86,6 +89,13 @@ class KuaiRecDataset:
                 frame["raw_video_id"].to_numpy(dtype=np.int64, copy=True)
             ),
         }
+
+        if self.has_pair_weights:
+            weights = frame["pair_weight"].to_numpy(dtype=np.float32, copy=True)
+            if not np.isfinite(weights).all() or (weights <= 0).any():
+                raise ValueError("Pair weights must be finite and positive")
+            result["pair_weight"] = torch.from_numpy(weights)
+        return result
 
 
 class _ParquetBatches(IterableDataset):
