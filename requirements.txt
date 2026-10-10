@@ -1,7 +1,2 @@
-# Core
-torch>=2.0
-numpy>=1.24
-pandas>=2.0
-pyarrow>=14.0
-matplotlib>=3.8
-torchmetrics>=1.0
+# Install package and its dependencies from pyproject.toml.
+-e .

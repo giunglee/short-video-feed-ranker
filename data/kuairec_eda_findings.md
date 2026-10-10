@@ -8,7 +8,9 @@ Current work will audit both matrices, then make supervised feature decisions
 using big-matrix training/validation only. Small-matrix label summaries describe
 distribution shift; they must not drive model selection.
 
-The current preprocessing and feature configuration still implement the old
-protocol. Do not regenerate extracts or report them as corrected benchmark results.
+The preprocessor implements the big-train/validation and small-test protocol.
+Pipeline implementation and synthetic checks do not establish modeling conclusions.
+Revisit EDA and feature decisions before the next training/evaluation cycle and
+record its findings separately from the pipeline changes.
 New findings will be recorded here after the audit. Historical notes and notebook
 are preserved locally; existing result artifacts are unchanged.
