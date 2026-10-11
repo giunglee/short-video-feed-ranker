@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import random
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -40,9 +42,11 @@ def run_experiment(
     hidden: list[int],
     dropout: float = 0.0,
     use_ids: bool = True,
+    resume_from: Path | None = None,
 ) -> dict[str, Any]:
     if output.exists():
         raise FileExistsError(f"Use a fresh run directory: {output}")
+    setup_started = time.monotonic()
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
@@ -63,7 +67,19 @@ def run_experiment(
         **collect_run_provenance(),
     }
     trainer = build_trainer(model, dataset, config)
-    result = trainer.fit(output, metadata)
+    metadata["runtime"] = {
+        "platform": platform.platform(),
+        "torch_version": str(torch.__version__),
+        "threads": torch.get_num_threads(),
+        "device": config.device,
+        "setup_seconds": time.monotonic() - setup_started,
+    }
+    if resume_from is not None:
+        metadata["continuation"] = {
+            "source": str(resume_from),
+            "last_checkpoint_sha256": sha256(resume_from / "last.pt"),
+        }
+    result = trainer.fit(output, metadata, resume_from=resume_from)
     result.update(
         {
             "model": model_name,
@@ -170,15 +186,28 @@ def _restore_for_test(
     training = dict(saved["training"])
     training["optimizer"] = OptimizerConfig(**training["optimizer"])
     training["device"] = device
-    return build_trainer(model, dataset, TrainConfig(**training)), saved
+    return build_trainer(
+        model, dataset, TrainConfig(**training), include_train_diagnostic=False
+    ), saved
 
 
-def build_trainer(model: nn.Module, dataset: KuaiRecDataset, config: TrainConfig) -> Trainer:
+def build_trainer(
+    model: nn.Module,
+    dataset: KuaiRecDataset,
+    config: TrainConfig,
+    *,
+    include_train_diagnostic: bool = True,
+) -> Trainer:
     if config.weighting == "pair" and not dataset.has_pair_weights:
         raise ValueError("Pair weighting requires signature-dedup-v2 prepared data")
     losses = {"mae": nn.L1Loss, "mse": nn.MSELoss, "smooth_l1": nn.SmoothL1Loss}
+    loaders = {split: dataset.loader(split, config.eval_batch_size) for split in ("val", "test")}
+    if include_train_diagnostic and config.train_eval_rows:
+        loaders["train_diagnostic"] = dataset.fixed_train_loader(
+            config.train_eval_rows, config.train_eval_seed, config.eval_batch_size
+        )
     evaluator = RegressionEvaluator(
-        loaders={split: dataset.loader(split, config.eval_batch_size) for split in ("val", "test")},
+        loaders=loaders,
         metrics=config.metrics,
         device=config.device,
         metric_seed=config.metric_seed,
@@ -200,6 +229,8 @@ def build_trainer(model: nn.Module, dataset: KuaiRecDataset, config: TrainConfig
 def add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--train-eval-rows", type=int, default=100_000)
+    parser.add_argument("--train-eval-seed", type=int, default=2026)
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--hidden", type=int, nargs="+", default=[128, 32])
@@ -221,6 +252,8 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
 def config_from_args(args: argparse.Namespace, seed: int) -> TrainConfig:
     return TrainConfig(
         epochs=args.epochs,
+        train_eval_rows=getattr(args, "train_eval_rows", 100_000),
+        train_eval_seed=getattr(args, "train_eval_seed", 2026),
         batch_size=args.batch_size,
         seed=seed,
         device=args.device,

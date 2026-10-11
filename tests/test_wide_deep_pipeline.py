@@ -111,6 +111,84 @@ class PipelineTest(unittest.TestCase):
         result = trainer.fit(self.root / "pair_run", {})
         self.assertTrue(np.isfinite(result["val"]["mae"]))
 
+    def test_fixed_training_diagnostic_and_allowlisted_trace(self) -> None:
+        from feed_ranker.experiments.diagnostics import activity_groups, export_validation_trace
+        from feed_ranker.experiments.wide_deep_kuairec import build_model, build_trainer
+
+        model, dataset = build_model(self.data, "wide_deep_nn", [4], 0.0, True)
+
+        def identities(loader):
+            return [
+                (int(u), int(v))
+                for batch in loader
+                for u, v in zip(batch["raw_user_id"], batch["raw_video_id"])
+            ]
+
+        first = identities(dataset.fixed_train_loader(9, 23, 4))
+        self.assertEqual(first, identities(dataset.fixed_train_loader(9, 23, 7)))
+        self.assertEqual(len(first), 9)
+        trainer = build_trainer(
+            model,
+            dataset,
+            TrainConfig(epochs=1, batch_size=16, train_eval_rows=9, train_eval_seed=23),
+        )
+        run = self.root / "diagnostic_run"
+        trainer.fit(run, {})
+        history = json.loads((run / "history.json").read_text())
+        self.assertEqual(history[0]["train_eval"]["rows"], 9)
+        self.assertGreater(history[0]["training_seconds"], 0)
+        output = self.root / "trace"
+        export_validation_trace(
+            model, dataset, run / "best.pt", output, feature_allowlist=["video_duration"]
+        )
+        trace = pd.read_parquet(output / "validation_trace.parquet")
+        self.assertIn("feature__video_duration", trace)
+        self.assertNotIn("feature__user_id", trace)
+        self.assertEqual(len(trace), self.meta["splits"]["val"]["rows"])
+        cohorts = pd.read_csv(output / "cohort_metrics.csv")
+        activity = cohorts[cohorts.dimension.eq("train_activity")]
+        self.assertEqual(activity.rows.sum(), len(trace))
+        self.assertEqual(
+            activity_groups(pd.Series([0, 1, 5, 10]), (2.0, 6.0)).tolist(),
+            ["unseen", "low", "medium", "high"],
+        )
+
+    def test_cpu_continuation_matches_uninterrupted_training(self) -> None:
+        def run(output: str, epochs: int, source: Path | None = None):
+            return run_experiment(
+                self.data,
+                self.root / output,
+                "wide_deep_nn",
+                TrainConfig(epochs=epochs, batch_size=16, seed=17),
+                [8, 4],
+                dropout=0.2,
+                resume_from=source,
+            )
+
+        run("full", 4)
+        run("first", 2)
+        run("continued", 4, self.root / "first")
+        a = torch.load(self.root / "full/last.pt", weights_only=True)
+        b = torch.load(self.root / "continued/last.pt", weights_only=True)
+        for key in a["model"]:
+            torch.testing.assert_close(a["model"][key], b["model"][key], rtol=0, atol=0)
+        self.assertEqual(a["val"], b["val"])
+        first = torch.load(self.root / "full/best.pt", weights_only=True)
+        resumed = torch.load(self.root / "continued/best.pt", weights_only=True)
+        self.assertEqual(first["epoch"], resumed["epoch"])
+        with self.assertRaisesRegex(ValueError, "larger epoch cap"):
+            run("invalid_cap", 2, self.root / "first")
+        with self.assertRaisesRegex(ValueError, "only the epoch cap"):
+            run_experiment(
+                self.data,
+                self.root / "invalid_weight",
+                "wide_deep_nn",
+                TrainConfig(epochs=4, batch_size=16, seed=17, weighting="pair"),
+                [8, 4],
+                dropout=0.2,
+                resume_from=self.root / "first",
+            )
+
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
@@ -421,7 +499,12 @@ class PipelineTest(unittest.TestCase):
 
     def test_selection_max_keeps_first_tie_and_rejects_undefined(self) -> None:
         config = TrainConfig(
-            epochs=3, batch_size=7, metrics=("xauc",), selection_metric="xauc", selection_mode="max"
+            epochs=3,
+            batch_size=7,
+            metrics=("xauc",),
+            selection_metric="xauc",
+            selection_mode="max",
+            train_eval_rows=0,
         )
         model, dataset = build_model(self.data, "deep_nn", [8], 0)
         trainer = build_trainer(model, dataset, config)
