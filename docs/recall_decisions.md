@@ -77,6 +77,11 @@ Other fixed choices: negative cutoff, pair weighting, embedding dimension, optim
 settings and recall checkpoint selector. No broad sweep is required to review this
 bounded baseline; list these as assumptions, not validated best practices.
 
+## Recall → rank boundary
+
+See [the integration contract](recall_rank.md) for capped utility, target-pilot
+interpretation and matched-seed funnel evidence.
+
 ## Run / review
 
 After preparing ranking data with `signature-dedup-v2`:

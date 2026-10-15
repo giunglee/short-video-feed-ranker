@@ -1,0 +1,13 @@
+seed,recall_negative_policy,rank_target,M,cap2_ndcg10
+42,negative_only,raw,20,0.7376328347227438
+42,negative_only,raw,50,0.74033521532405
+42,negative_only,raw,100,0.7400073968630637
+42,negative_only,capped,20,0.7360113702022293
+42,negative_only,capped,50,0.738430307111047
+42,negative_only,capped,100,0.737735574344088
+42,negative_and_neutral,raw,20,0.7372387621188307
+42,negative_and_neutral,raw,50,0.739665337667631
+42,negative_and_neutral,raw,100,0.7399182010023211
+42,negative_and_neutral,capped,20,0.7355608774097474
+42,negative_and_neutral,capped,50,0.7371390404022488
+42,negative_and_neutral,capped,100,0.7377900676546391
