@@ -4,13 +4,13 @@
 This benchmark measures preference generalization within observed held-out pools,
 not next-watch prediction or catalog-wide online performance.
 
-## Frozen contract
+## Recall reference contract
 
 | Decision | Rule | Why / boundary |
 |---|---|---|
 | Split | Big matrix; inherited 90/10 pair split, seed2026; exact-signature deduplication | All events of a pair stay together; no new small-matrix test use |
 | Pair label | Earliest observed event; stable source row resolves ties or missing time | First exposure fits unseen-pair retrieval; repeated outcomes are not extra training pairs |
-| Positive | `r >= min(1, sqrt(10/d))`, duration `d` in seconds | Sufficient viewing proxy; threshold parameters have **not** been sensitivity-tested |
+| Positive | `r >= min(1, sqrt(10/d))`, duration `d` in seconds | Sufficient viewing proxy; retain10s after a bounded8s training sensitivity pilot |
 | Clear negative | `r < min(0.3, 0.5 * positive_threshold)` | Disjoint positive/negative labels with a neutral band |
 | History | Unique training-positive videos; full history | No validation behavior; all training outcomes count as seen |
 | Catalog/pool | Training catalog intersected with each user's observed validation pairs; exclude seen pairs | Unobserved pairs have unknown outcomes, not negative labels |
@@ -50,14 +50,28 @@ note and headline comparisons belong in the PR description, avoiding parallel re
 - Seed42 informed exploration;43–46 have earlier ranking history. Multi-seed results
   test training stability on a reused validation split, not independent holdout validity.
 
-## What remains untested
+## Label sensitivity: what we checked
 
-**Next focused question:** label sensitivity. First audit train-only positive/negative
-rates, pair-label flips and user support for nearby curve anchors (for example8/10/12s).
-If material, compare one declared alternative with capped final utility, pools and
-ranker held fixed. A label change also changes histories and baseline counts; rebuild
-all affected methods for a fair recipe comparison. Do not select a curve by whichever
-binary Recall score is highest under its own labels.
+Training-only audit of9,270,873 first-event pairs; negative membership held fixed:
+
+| Positive anchor | Positive pairs | Changed labels vs10s | Median positive history |
+|---|---:|---:|---:|
+| 8s | 3,685,176 | +315,498 positives | 462 |
+| **10s reference** | **3,369,678** | **0** | **426** |
+| 12s | 3,265,928 | −103,750 positives | 417 |
+
+All7,176 users retain both classes. If negatives follow the new curve too,8s/12s
+also change47,116/23,378 negative memberships. We audited that coupling separately.
+See [audit aggregates](results/recall_curve_audit.csv).
+
+**Controlled pilot:** chose8s from training evidence; rebuilt popularity/cooccurrence
+and trained seed42 MF. Only training positives changed; original negatives,
+validation binary labels, Recall50 checkpoint rule and pools stayed fixed. Both MF
+arms used15epochs;8s has9.36% more pairs/updates. Best epochs10s/8s:8/7.
+Reference-label MF Recall50 fell .623405→.621999. Fixed capped-ranker final utility
+also declined slightly; see [integration results](recall_rank.md#curve-sensitivity).
+**Recommendation: retain10s.** This is no proof of optimality or seed-robust rejection;
+12s was audited but not trained. Do not compare binary Recall under changing labels.
 
 Other fixed choices: negative cutoff, pair weighting, embedding dimension, optimizer
 settings and recall checkpoint selector. No broad sweep is required to review this
