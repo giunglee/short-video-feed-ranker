@@ -1,0 +1,200 @@
+"""Scalar-loss training with explicit validation metrics and checkpoint selection.
+
+The runner supplies the loss and evaluator. Test is never read during fitting.
+Training loss is measured during updates, not by rescoring a frozen checkpoint.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+import torch
+from torch import nn
+
+from feed_ranker.artifacts import save_checkpoint, write_json
+from feed_ranker.data.schema import RecommendationBatch
+from feed_ranker.training.evaluation import METRICS, RegressionEvaluator, predict_regression
+from feed_ranker.training.optimizer import OptimizerConfig, build_optimizer
+
+
+@dataclass
+class TrainConfig:
+    # reasonable default, not from any specific production config
+    epochs: int = 15
+    batch_size: int = 1024
+    eval_batch_size: int = 8192
+    seed: int = 42
+    metric_seed: int = 0
+    xauc_pairs: int = 100_000
+    user_pairs: int = 256
+    device: str = "cpu"
+    steps: int | None = None
+    loss: str = "mae"
+    metrics: tuple[str, ...] = ("mae", "xauc", "user_xauc")
+    selection_metric: str = "mae"
+    selection_mode: str = "min"
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+
+    def __post_init__(self) -> None:
+        self.metrics = tuple(self.metrics)
+        if self.loss not in ("mae", "mse", "smooth_l1"):
+            raise ValueError("loss must be mae, mse, or smooth_l1")
+        if (
+            not self.metrics
+            or len(set(self.metrics)) != len(self.metrics)
+            or set(self.metrics) - set(METRICS)
+        ):
+            raise ValueError(f"metrics must be a nonempty unique subset of {METRICS}")
+        if self.selection_metric not in self.metrics:
+            raise ValueError("selection_metric must be included in metrics")
+        if self.selection_mode not in ("min", "max"):
+            raise ValueError("selection_mode must be min or max")
+        positive_fields = ("epochs", "batch_size", "eval_batch_size", "xauc_pairs", "user_pairs")
+        for name in positive_fields:
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.steps is not None and (type(self.steps) is not int or self.steps <= 0):
+            raise ValueError("steps must be a positive integer or None")
+        for name in ("seed", "metric_seed"):
+            value = getattr(self, name)
+            if type(value) is not int or not 0 <= value < 2**32:
+                raise ValueError(f"{name} must be an integer in [0, 2**32)")
+
+
+class Trainer:
+    """Own one run; loss_fn must return a scalar mean loss over the batch."""
+
+    def __init__(
+        self,
+        model: nn.Module,
+        train_batches: Callable[[int], Iterable[RecommendationBatch]],
+        config: TrainConfig,
+        *,
+        loss_fn: nn.Module,
+        evaluator: RegressionEvaluator,
+    ) -> None:
+        self.model = model.to(config.device)
+        self.train_batches = train_batches
+        self.config = config
+        self.loss_fn = loss_fn.to(config.device)
+        self.evaluator = evaluator
+        self.optimizer = build_optimizer(self.model, config.optimizer)
+
+    def fit(self, directory: Path, metadata: dict[str, Any]) -> dict[str, Any]:
+        directory.mkdir(parents=True, exist_ok=False)
+        write_json(directory / "config.json", {"training": asdict(self.config), **metadata})
+        history: list[dict[str, Any]] = []
+        best_score = math.inf if self.config.selection_mode == "min" else -math.inf
+
+        for epoch in range(self.config.epochs):
+            started = time.monotonic()
+            training = self._train_epoch(epoch)
+            validation = self.evaluator.evaluate(self.model, "val")
+            score = validation[self.config.selection_metric]
+            if score is None or not math.isfinite(score):
+                raise ValueError(f"Selection metric {self.config.selection_metric!r} is undefined")
+            history.append(
+                {
+                    "epoch": epoch,
+                    **training,
+                    "val": validation,
+                    "learning_rate": self.optimizer.param_groups[0]["lr"],
+                    "seconds": time.monotonic() - started,
+                }
+            )
+            write_json(directory / "history.json", history)
+
+            checkpoint = self._checkpoint(epoch, validation, metadata)
+            save_checkpoint(directory / "last.pt", checkpoint)
+            # Strict improvement retains the earliest checkpoint on an exact tie.
+            improved = (
+                score < best_score if self.config.selection_mode == "min" else score > best_score
+            )
+            if improved:
+                best_score = score
+                save_checkpoint(directory / "best.pt", checkpoint)
+            print(
+                f"epoch={epoch} train={training['train_loss']:.6f} "
+                f"val_{self.config.selection_metric}={score:.6f}",
+                flush=True,
+            )
+
+        result = self._restore_best(directory, history)
+        write_json(directory / "result.json", result)
+        return result
+
+    def _train_epoch(self, epoch: int) -> dict[str, float | int]:
+        self.model.train()
+        loss_sum = 0.0
+        row_count = 0
+        gradient_norms: list[float] = []
+        batches = self.train_batches(epoch)
+        for step, batch in enumerate(batches):
+            if self.config.steps is not None and step >= self.config.steps:
+                break
+            self.optimizer.zero_grad(set_to_none=True)
+            labels = batch["label"].to(self.config.device)
+            predicted = predict_regression(
+                self.model, batch["feature"], len(labels), self.config.device
+            )
+            loss = self.loss_fn(predicted, labels)
+            if loss.ndim != 0 or not torch.isfinite(loss):
+                raise ValueError(f"Nonfinite training loss at epoch {epoch}, step {step}")
+            loss.backward()
+            # Infinity measures the norm and checks finiteness without clipping.
+            norm = nn.utils.clip_grad_norm_(
+                self.model.parameters(), float("inf"), error_if_nonfinite=True
+            )
+            self.optimizer.step()
+            loss_sum += loss.item() * len(labels)
+            row_count += len(labels)
+            gradient_norms.append(float(norm))
+
+        if row_count == 0:
+            raise ValueError("Empty training epoch")
+        return {
+            "train_loss": loss_sum / row_count,
+            "train_rows": row_count,
+            "gradient_norm_mean": sum(gradient_norms) / len(gradient_norms),
+        }
+
+    def _checkpoint(
+        self, epoch: int, validation: dict[str, Any], metadata: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "epoch": epoch,
+            "val": validation,
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "training": asdict(self.config),
+            "metadata": metadata,
+            "torch_rng": torch.get_rng_state(),
+        }
+
+    def _restore_best(self, directory: Path, history: list[dict[str, Any]]) -> dict[str, Any]:
+        selected = torch.load(
+            directory / "best.pt", map_location=self.config.device, weights_only=True
+        )
+        self.model.load_state_dict(selected["model"])
+        best_epoch = selected["epoch"]
+        neighbors = history[max(0, best_epoch - 1) : best_epoch + 2]
+        return {
+            "best_epoch": best_epoch,
+            "val": selected["val"],
+            "seed": self.config.seed,
+            "checkpoint_policy": {
+                "metric": self.config.selection_metric,
+                "mode": self.config.selection_mode,
+                "tie_break": "earliest epoch",
+            },
+            "neighbor_selection_values": [
+                row["val"][self.config.selection_metric] for row in neighbors
+            ],
+            "last_selection_value": history[-1]["val"][self.config.selection_metric],
+            "exploratory": self.config.steps is not None,
+        }

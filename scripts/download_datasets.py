@@ -30,9 +30,7 @@ RAW = ROOT / "data" / "raw"
 
 KUAIREC_ZIP = "https://zenodo.org/records/18164998/files/KuaiRec.zip"
 KUAIREC_EXTRAS: dict[str, str] = {
-    "user_features_raw.csv": (
-        "https://zenodo.org/records/18164998/files/user_features_raw.csv"
-    ),
+    "user_features_raw.csv": ("https://zenodo.org/records/18164998/files/user_features_raw.csv"),
     "video_raw_categories_multi.csv": (
         "https://zenodo.org/records/18164998/files/video_raw_categories_multi.csv"
     ),
@@ -45,7 +43,7 @@ KUAIREC_EXTRAS: dict[str, str] = {
 }
 
 KUAIRAND_TARBALLS: dict[str, tuple[str, str]] = {
-  # key -> (url, extract subdir name inside tarball)
+    # key -> (url, extract subdir name inside tarball)
     "pure": (
         "https://chongming.myds.me:61364/data/KuaiRand-Pure.tar.gz",
         "KuaiRand-Pure",
