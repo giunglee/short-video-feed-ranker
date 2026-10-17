@@ -109,7 +109,10 @@ class KuaiRecPreprocessor:
         }
         # IDs and duration already exist in the interaction matrices. Only other
         # explicitly selected inputs require the separate user-feature tables.
-        user_columns = self.features.required_columns - set(MATRIX_COLUMNS)
+        if "duration_band" in self.features.required_columns:
+            for frame in splits.values():
+                frame["duration_band"] = duration_band(frame["video_duration"])
+        user_columns = self.features.required_columns - set(MATRIX_COLUMNS) - {"duration_band"}
         if user_columns:
             user_features, user_sources = self._load_user_features(user_columns)
             sources.extend(user_sources)
@@ -244,6 +247,12 @@ class KuaiRecPreprocessor:
             "split_seed": self.split_seed,
             "val_ratio": self.val_ratio,
             "spec": asdict(self.features),
+            "derived_features": {
+                "duration_band": "milliseconds; [0,5000], (5000,10000], (10000,20000], "
+                "(20000,40000], (40000,60000], (60000,inf); missing/negative -> OOV"
+            }
+            if "duration_band" in self.features.required_columns
+            else {},
             "vocab": vocabulary,
             "preprocessor_sha256": sha256(Path(__file__)),
             "sources": {path.name: sha256(path) for path in sources},
@@ -290,6 +299,16 @@ class KuaiRecPreprocessor:
 
 
 # Internal value validation and transformations.
+
+
+def duration_band(values: pd.Series) -> pd.Series:
+    """Fixed duration bins in milliseconds; boundaries match the descriptive EDA."""
+    return pd.cut(
+        values,
+        [0, 5000, 10000, 20000, 40000, 60000, np.inf],
+        labels=["0–5s", "5–10s", "10–20s", "20–40s", "40–60s", ">60s"],
+        include_lowest=True,
+    ).astype("string")
 
 
 def _to_float32(values: pd.Series, name: str, fill_missing: bool = False) -> pd.Series:

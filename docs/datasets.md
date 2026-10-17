@@ -1,7 +1,9 @@
 # Data protocol and training decisions
 
-**Decision:** use a fixed pair split, raw-label MAE, and a 120-epoch cap with
-best-validation selection. Features and architectures remain comparison variables.
+**Current ranking study:** capped-label MAE (`min(watch_ratio, 2)`), maximum
+validation user-XAUC checkpoint selection, and a 120-epoch cap. See the
+[architecture results and reproduction](ranking_architecture.md).
+The raw-label recipe below records the earlier budget investigation.
 
 ## Data contract
 
@@ -16,14 +18,15 @@ best-validation selection. Features and architectures remain comparison variable
   effects. Historical small-label inspection and test evaluation prevent claiming
   an untouched test set; new model selection uses big validation only.
 - **Preprocessing:** fit vocabularies and mean/median baselines on train only.
-  Missing/unknown categories use learned index 0. Dense missing values become
+  Missing/unknown categories use index 0 (fixed zero in the architecture study;
+  learned in the earlier reference). Dense missing values become
   zero; model inputs use `log1p(max(x, 0))`.
 
 ## Feature scope
 
 - **Reference:** user ID, video ID, and duration; no explicit crosses.
-- **Pending ablations:** selected profiles, binary equality crosses, and sum-pooled
-  item categories. These are candidates, not established improvements.
+- **Architecture study:** IDs, duration, age range, follow-count range, duration
+  bands, and selected explicit crosses. Item categories are outside this comparison.
 - **Availability limits:** profiles are snapshots, not verified historical features.
   Daily item attributes need a separate timing audit. Captions and sequence models
   are deferred; daily engagement aggregates are excluded.

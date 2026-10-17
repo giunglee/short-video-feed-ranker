@@ -101,3 +101,25 @@ class CrossFeatureEncoder(nn.Module):
                 vals = vals.unsqueeze(-1)
             outs.append(vals)
         return torch.cat(outs, dim=-1)
+
+
+class CategoricalMainEffects(nn.Module):
+    """One coefficient per category, equivalent to a one-hot linear term.
+
+    Cheng et al. (2016), https://arxiv.org/abs/1606.07792.
+    Index zero is the training-vocabulary OOV category, with a fixed zero effect.
+    """
+
+    def __init__(self, configs: list[EmbeddingFeatureConfig]) -> None:
+        super().__init__()
+        if not configs or any(c.vocab_size is None for c in configs):
+            raise ValueError("Main effects require scalar categoricals with fitted vocabularies")
+        self.coefficients = nn.ModuleDict(
+            {c.name: nn.Embedding(c.vocab_size, 1, padding_idx=0) for c in configs}
+        )
+        for coefficients in self.coefficients.values():
+            nn.init.zeros_(coefficients.weight)
+
+    def forward(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
+        terms = [coefficients(features[name]) for name, coefficients in self.coefficients.items()]
+        return torch.stack(terms).sum(dim=0)
