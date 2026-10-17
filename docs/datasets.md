@@ -1,44 +1,93 @@
-# Data
+# Data protocol and training decisions
 
-Current experiment: [KuaiRec](https://kuairec.com/), stored in `data/raw/kuairec/`.
-Use `big_matrix.csv` for training/validation and `small_matrix.csv` for final test.
-Preparation first removes complete repeated signatures (user ID, video ID, timestamp,
-play duration, video duration, watch ratio), retaining the first across all labels.
-Missing-timestamp rows and distinct-time observations remain. Removal counts and
-`signature-dedup-v2` are recorded in the manifest; prior extracts remain historical.
-Preparation groups big user–video pairs into a fixed 90/10 train/validation split
-(seed 2026), keeping repeated events together. It rejects overlap with small and
-retains undated test rows. This tests pair generalization, not future prediction.
-Shared users/items are expected; encodings and mean/median baselines fit train only.
+**Decision:** use a fixed pair split, raw-label MAE, and a 120-epoch cap with
+best-validation selection. Features and architectures remain comparison variables.
 
-The explicit feature spec supports IDs, duration, selected user profiles and binary
-equality crosses. Daily engagement aggregates are excluded. Review profile timing
-before use. Unknown/missing categories map to index 0 (a normal embedding row);
-Dense missing values become zero and dense model inputs use log1p(max(x, 0)).
-The loader caches selected training columns for shuffling and streams evaluation.
-Batch metadata retains `raw_user_id` and `raw_video_id`; encoded IDs remain model
-features. `ConstantRegressor` fits mean/median predictions from prepared training
-labels; runs save those predictions for final evaluation without refitting.
+## Data contract
 
-This is an offline modeling pipeline: public CSV snapshots → prepared parquet →
-tensor batches. CSV parsing happens during preparation, not on every training step.
-It does not implement online feature lookup, event ingestion, or serving infrastructure.
-A production adaptation would need point-in-time feature availability and consistent
-training/serving transformations; those are outside this experiment's scope.
+- **Source:** public [KuaiRec](https://kuairec.com/), locally under `data/raw/kuairec/`.
+  Big matrix supplies training/validation; small matrix supplies final test.
+- **Cleaning:** remove complete repeated signatures: user, video, timestamp, play
+  duration, video duration, watch ratio. Keep the first; retain missing timestamps
+  and distinct-time repeats. Record removals as `signature-dedup-v2`.
+- **Split:** fixed 90/10 big-only split by user–video pair, seed 2026. Reject
+  big/small pair overlap. Shared users/items are expected; retain undated test rows.
+- **Interpretation:** evaluates unseen pairs, not future-time prediction or causal
+  effects. Historical small-label inspection and test evaluation prevent claiming
+  an untouched test set; new model selection uses big validation only.
+- **Preprocessing:** fit vocabularies and mean/median baselines on train only.
+  Missing/unknown categories use learned index 0. Dense missing values become
+  zero; model inputs use `log1p(max(x, 0))`.
 
-Training defaults to event-weighted raw-label loss. `--weighting pair` instead
-uses inverse within-split pair frequency and normalizes each batch by its weight
-sum; this is a self-normalized minibatch approximation to the equal-pair objective.
-It does not balance users or correct exposure bias. Evaluation and checkpoint
-selection remain event-weighted MAE; XAUC sampling is unchanged.
-MAE is event-weighted on raw watch ratio. Global XAUC samples unequal-label pairs;
-within-user concordance averages eligible users equally. Prediction ties score 0.5;
-users without unequal-label pairs are excluded and counted. Metric sampling uses a
-fixed seed, independent of training seeds. Seed variation is not test-population uncertainty.
-Historical small-label use prevents claiming a never-inspected test set.
+## Feature scope
 
-Download/setup: [data README](../data/README.md).
-Dataset paper: [KuaiRec (CIKM 2022)](https://doi.org/10.1145/3511808.3557220).
+- **Reference:** user ID, video ID, and duration; no explicit crosses.
+- **Pending ablations:** selected profiles, binary equality crosses, and sum-pooled
+  item categories. These are candidates, not established improvements.
+- **Availability limits:** profiles are snapshots, not verified historical features.
+  Daily item attributes need a separate timing audit. Captions and sequence models
+  are deferred; daily engagement aggregates are excluded.
+- **Serving boundary:** CSV → parquet → tensor batches is an offline adapter.
+  Raw IDs remain batch metadata. Online feature lookup and point-in-time serving
+  contracts are outside this study.
 
-[KuaiRand](https://kuairand.com/) is a later option when an experiment requires it;
-no additional dataset preparation is needed now.
+## Training recipe and budget
+
+- **Reference model:** Wide & Deep; two 8-dimensional ID embeddings plus log1p
+  duration → 17 deep inputs → [128, 32] → scalar output. Duration also feeds the
+  wide branch. No dropout.
+- **Optimizer:** AdamW, learning rate 0.001, weight decay 0, no scheduler.
+- **Batches:** training 1,024; evaluation 8,192. Each epoch shuffles every training
+  row once using training seed + epoch index; retain the last partial batch.
+  10,406,371 rows give 10,163 updates per epoch. `--steps` is debug-only.
+- **Loss:** raw-label MAE with event weighting. Optional `--weighting pair` uses
+  inverse pair frequency and divides minibatch loss by its weight sum. This
+  approximates equal-pair risk; it does not equalize users or correct exposure bias.
+- **Budget and selection:** pass `--epochs 120` explicitly; generic defaults remain
+  15. Train to the cap, select minimum validation MAE, and keep the earliest exact
+  tie. Report every metric from that checkpoint.
+- **Confirmation:** matched training seeds 42–46; fixed split, preprocessing policy,
+  and selection rule. Report each seed, mean/sample standard deviation, and
+  same-seed differences. Change one declared factor per comparison.
+
+### Evidence for the cap
+
+- **Investigation:** seed 42, progressing through 30, 60, and 120 epochs.
+  The reference still selected the boundary at epoch 60.
+- **Reference result:** extending to 120 selected epoch 99, validation MAE 0.452019.
+  At epoch 120, fixed-train MAE was 0.441212 versus validation MAE 0.452320:
+  training fit improved while validation improvement flattened.
+- **Other budget probes:** pair weighting and added categories selected epochs
+  108 and 118. These single-seed runs do not establish comparative gains.
+- **Decision:** adopt 120 as a practical cap, not proof of universal convergence.
+  A future candidate needing a different budget requires a declared investigation.
+  No new small-matrix evaluation informed this decision.
+
+## Metrics and failure diagnostics
+
+- **MAE:** event-weighted across all validation rows, regardless of training weights.
+- **Global XAUC:** sampled concordance across unequal-label event pairs; 100,000 pairs.
+- **User XAUC:** equal-user average of within-user concordance; 256 sampled pairs per
+  user. Prediction ties score 0.5; users without unequal-label pairs are excluded
+  and counted. Metric seed is fixed at 0. Seed variation is not data uncertainty.
+- **Generalization gap:** score the same 100,000 training rows in evaluation mode,
+  sampling seed 2026. Compare with validation from the same checkpoint. Training
+  loss accumulated during updates is not directly equivalent. Set
+  `--train-eval-rows 0` to disable the diagnostic.
+- **Failure review:** inspect neighboring epochs, gradients, prediction distributions,
+  and errors by duration, label tail, user activity, and video support. Allowlisted
+  traces preserve predictions/labels and features; training counts define activity
+  groups. Optional snapshot activity remains descriptive, not point-in-time verified.
+- **Runtime:** separate training, diagnostics, validation, and checkpoint time.
+  Runs used CPU with four threads. Equal epochs mean equal data passes, not equal
+  compute; local wall time is not serving latency.
+
+## Reproducibility
+
+- Save configuration, source/data provenance, full history, best/last checkpoints,
+  and train-fitted constant baselines.
+- CPU continuation via `run_experiment(..., resume_from=...)` restores model,
+  optimizer, and torch RNG into a fresh directory. Preserve history and prior best;
+  only the epoch cap may change.
+- [Commands and setup](../data/README.md) · [EDA rationale](../data/kuairec_eda_findings.md)
+  · [Dataset paper](https://doi.org/10.1145/3511808.3557220).

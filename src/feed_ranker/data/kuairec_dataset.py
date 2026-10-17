@@ -56,6 +56,26 @@ class KuaiRecDataset:
         generator = torch.Generator().manual_seed(0)
         return DataLoader(batches, batch_size=None, num_workers=0, generator=generator)
 
+    def fixed_train_loader(self, rows: int, seed: int, batch_size: int) -> DataLoader:
+        """Uniform row sample without replacement, fixed independently of training RNG."""
+        if rows <= 0 or batch_size <= 0:
+            raise ValueError("Training diagnostic rows and batch size must be positive")
+        if self._train is None:
+            self._train = pd.read_parquet(self.directory / "train.parquet", columns=self._columns)
+        indices = np.sort(
+            np.random.default_rng(seed).choice(
+                len(self._train), size=min(rows, len(self._train)), replace=False
+            )
+        )
+        sample = self._train.iloc[indices]
+        batches = [
+            self._pack(sample.iloc[start : start + batch_size])
+            for start in range(0, len(sample), batch_size)
+        ]
+        return DataLoader(
+            batches, batch_size=None, num_workers=0, generator=torch.Generator().manual_seed(0)
+        )
+
     def _shuffled_train_frames(self, batch_size: int, seed: int) -> Iterator[pd.DataFrame]:
         if self._train is None:
             self._train = pd.read_parquet(self.directory / "train.parquet", columns=self._columns)
