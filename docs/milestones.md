@@ -1,9 +1,8 @@
 # Progress
 
-- Historical: Wide & Deep experiments on temporal slices of the small matrix;
-  conclusions are archived and do not establish big-to-small performance.
-- Implemented: fixed pair split, train-fitted encodings, deterministic seed comparisons,
-  checkpoint diagnostics, and separate final-test command; synthetic checks pass.
-- Next: revisit EDA, feature decisions, and outstanding diagnostics; then train,
-  evaluate, and write a separate experiment summary.
-- Recall remains paused until the ranking experiment and interpretation are complete.
+- **Completed:** reproducible big-only pair split, model/training pipeline, and
+  [label/feature audit](../data/kuairec_eda_findings.md) with signature deduplication.
+- **Next:** diagnose training and establish a common budget before controlled
+  weighting, feature, and architecture comparisons.
+- **Final evaluation:** small matrix after validation decisions are frozen.
+  Historical test exposure is disclosed; recall remains paused.

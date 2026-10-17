@@ -58,6 +58,17 @@ def split_pairs(frame: pd.DataFrame, seed: int, val_ratio: float) -> np.ndarray:
     return pd.MultiIndex.from_frame(frame[KEYS]).isin(held_out)
 
 
+def deduplicate_signatures(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Retain the first complete event signature; unknown timestamps remain distinct."""
+    signature = [*KEYS, "timestamp", "play_duration", "video_duration", LABEL]
+    missing = set(signature) - set(frame.columns)
+    if missing:
+        raise ValueError(f"Signature deduplication requires columns: {sorted(missing)}")
+    complete = frame[signature].notna().all(axis=1)
+    repeated = complete & frame.duplicated(signature)
+    return frame.loc[~repeated].copy(), int(repeated.sum())
+
+
 class KuaiRecPreprocessor:
     """Prepare one dataset with a fixed split and train-fitted categorical mappings.
 
@@ -87,6 +98,9 @@ class KuaiRecPreprocessor:
         if self.output.exists():
             raise FileExistsError(f"Use a new protocol directory: {self.output}")
         big, small, sources = self._load_matrices()
+        removal_counts = {}
+        big, removal_counts["big_matrix"] = deduplicate_signatures(big)
+        small, removal_counts["small_matrix"] = deduplicate_signatures(small)
         validation_mask = split_pairs(big, self.split_seed, self.val_ratio)
         splits = {
             "train": big.loc[~validation_mask].copy(),
@@ -108,11 +122,20 @@ class KuaiRecPreprocessor:
         vocabulary = self._fit_category_vocabulary(splits["train"])
         metadata = self._build_metadata(vocabulary, sources)
 
+        metadata["deduplication"] = {
+            "policy": "complete_signature_keep_first",
+            "removed_rows": removal_counts,
+            "signature": [*KEYS, "timestamp", "play_duration", "video_duration", LABEL],
+            "missing_timestamp": "retain",
+        }
         return self._write_dataset(splits, vocabulary, metadata)
 
     def _load_matrices(self) -> tuple[pd.DataFrame, pd.DataFrame, list[Path]]:
         sources = [self.raw_dir / f"{name}_matrix.csv" for name in ("big", "small")]
-        big, small = [pd.read_csv(path, usecols=MATRIX_COLUMNS) for path in sources]
+        big, small = [
+            pd.read_csv(path, usecols=[*MATRIX_COLUMNS, "timestamp", "play_duration"])
+            for path in sources
+        ]
         KuaiRecInstance.validate_frame(big, sources[0])
         KuaiRecInstance.validate_frame(small, sources[1])
 
@@ -191,6 +214,8 @@ class KuaiRecPreprocessor:
             mapping = {value: index + 1 for index, value in enumerate(values)}
             # Index zero represents both missing and unseen categories.
             encoded[name] = frame[name].astype("string").map(mapping).fillna(0).astype("int64")
+        counts = frame.groupby(KEYS)[LABEL].transform("size")
+        encoded["pair_weight"] = (1.0 / counts).astype("float32")
         for name in self.features.dense:
             encoded[name] = _to_float32(frame[name], name, fill_missing=True)
         for name, conditions in self.features.crosses.items():
@@ -208,6 +233,7 @@ class KuaiRecPreprocessor:
     ) -> dict[str, Any]:
         return {
             "protocol": PROTOCOL,
+            "preprocessing_version": "signature-dedup-v2",
             "split_policy": {
                 "name": "random_pair_holdout",
                 "group_by": KEYS.copy(),
@@ -225,7 +251,7 @@ class KuaiRecPreprocessor:
                 "Pair holdout, not a temporal forecast",
                 "Profile snapshot timing requires review",
                 "Small labels were used in historical experiments",
-                "Repeated big events retained; no label aggregation",
+                "Distinct event signatures retained; no label aggregation",
             ],
         }
 

@@ -2,6 +2,10 @@
 
 Current experiment: [KuaiRec](https://kuairec.com/), stored in `data/raw/kuairec/`.
 Use `big_matrix.csv` for training/validation and `small_matrix.csv` for final test.
+Preparation first removes complete repeated signatures (user ID, video ID, timestamp,
+play duration, video duration, watch ratio), retaining the first across all labels.
+Missing-timestamp rows and distinct-time observations remain. Removal counts and
+`signature-dedup-v2` are recorded in the manifest; prior extracts remain historical.
 Preparation groups big user–video pairs into a fixed 90/10 train/validation split
 (seed 2026), keeping repeated events together. It rejects overlap with small and
 retains undated test rows. This tests pair generalization, not future prediction.
@@ -10,7 +14,7 @@ Shared users/items are expected; encodings and mean/median baselines fit train o
 The explicit feature spec supports IDs, duration, selected user profiles and binary
 equality crosses. Daily engagement aggregates are excluded. Review profile timing
 before use. Unknown/missing categories map to index 0 (a normal embedding row);
-dense missing values become zero and dense model inputs use log1p(max(x, 0)).
+Dense missing values become zero and dense model inputs use log1p(max(x, 0)).
 The loader caches selected training columns for shuffling and streams evaluation.
 Batch metadata retains `raw_user_id` and `raw_video_id`; encoded IDs remain model
 features. `ConstantRegressor` fits mean/median predictions from prepared training
@@ -22,6 +26,11 @@ It does not implement online feature lookup, event ingestion, or serving infrast
 A production adaptation would need point-in-time feature availability and consistent
 training/serving transformations; those are outside this experiment's scope.
 
+Training defaults to event-weighted raw-label loss. `--weighting pair` instead
+uses inverse within-split pair frequency and normalizes each batch by its weight
+sum; this is a self-normalized minibatch approximation to the equal-pair objective.
+It does not balance users or correct exposure bias. Evaluation and checkpoint
+selection remain event-weighted MAE; XAUC sampling is unchanged.
 MAE is event-weighted on raw watch ratio. Global XAUC samples unequal-label pairs;
 within-user concordance averages eligible users equally. Prediction ties score 0.5;
 users without unequal-label pairs are excluded and counted. Metric sampling uses a

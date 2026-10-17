@@ -64,6 +64,8 @@ class PipelineTest(unittest.TestCase):
                 for u in range(9)
             ]
         )
+        self.big["play_duration"] = self.big.watch_ratio * self.big.video_duration
+        self.small["play_duration"] = self.small.watch_ratio * self.small.video_duration
         self.big.to_csv(self.raw / "big_matrix.csv", index=False)
         self.small.to_csv(self.raw / "small_matrix.csv", index=False)
         self.spec = {
@@ -75,6 +77,39 @@ class PipelineTest(unittest.TestCase):
         self.meta = KuaiRecPreprocessor(
             self.raw, self.data, self.spec, split_seed=5, val_ratio=0.25
         ).run()
+
+    def test_signature_policy_keeps_distinct_times_and_missing_timestamps(self) -> None:
+        from feed_ranker.data.kuairec_preprocessor import (
+            deduplicate_signatures,
+        )
+
+        extra = self.big.iloc[[0]].copy()
+        extra["timestamp"] = np.nan
+        source = pd.concat([self.big, extra, extra], ignore_index=True)
+        cleaned, removed = deduplicate_signatures(source)
+        self.assertEqual(removed, 3)
+        self.assertEqual(cleaned.timestamp.isna().sum(), 2)
+        self.assertEqual(len(source), 69)
+
+    def test_pair_weights_sum_to_one_and_train_without_categories(self) -> None:
+        from feed_ranker.experiments.wide_deep_kuairec import build_model, build_trainer
+
+        extra = self.big.iloc[[0]].copy()
+        extra["timestamp"] += 10000
+        pd.concat([self.big, extra]).to_csv(self.raw / "big_matrix.csv", index=False)
+        output = self.root / "pair_data"
+        KuaiRecPreprocessor(self.raw, output, self.spec, split_seed=5, val_ratio=0.25).run()
+        for split in ("train", "val"):
+            frame = pd.read_parquet(output / f"{split}.parquet")
+            np.testing.assert_allclose(
+                frame.groupby(["raw_user_id", "raw_video_id"]).pair_weight.sum(), 1
+            )
+        model, dataset = build_model(output, "wide_deep_nn", [4], 0.0, True)
+        trainer = build_trainer(
+            model, dataset, TrainConfig(epochs=1, batch_size=16, weighting="pair")
+        )
+        result = trainer.fit(self.root / "pair_run", {})
+        self.assertTrue(np.isfinite(result["val"]["mae"]))
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -113,7 +148,8 @@ class PipelineTest(unittest.TestCase):
 
         self.assertFalse(pairs(train) & pairs(val))
         self.assertFalse((pairs(train) | pairs(val)) & pairs(test))
-        self.assertEqual(len(train) + len(val), len(self.big))
+        self.assertEqual(len(train) + len(val), len(self.big) - 3)
+        self.assertEqual(self.meta["deduplication"]["removed_rows"]["big_matrix"], 3)
         self.assertEqual(len(test), len(self.small))
         self.assertTrue(test.video_id.eq(0).all())
         self.assertEqual(test.loc[test.raw_user_id.eq(8), "user_id"].item(), 0)

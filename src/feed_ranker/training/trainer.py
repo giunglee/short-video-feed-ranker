@@ -34,6 +34,7 @@ class TrainConfig:
     device: str = "cpu"
     steps: int | None = None
     loss: str = "mae"
+    weighting: str = "event"
     metrics: tuple[str, ...] = ("mae", "xauc", "user_xauc")
     selection_metric: str = "mae"
     selection_mode: str = "min"
@@ -41,6 +42,8 @@ class TrainConfig:
 
     def __post_init__(self) -> None:
         self.metrics = tuple(self.metrics)
+        if self.weighting not in ("event", "pair"):
+            raise ValueError("weighting must be event or pair")
         if self.loss not in ("mae", "mse", "smooth_l1"):
             raise ValueError("loss must be mae, mse, or smooth_l1")
         if (
@@ -132,6 +135,7 @@ class Trainer:
         self.model.train()
         loss_sum = 0.0
         row_count = 0
+        weight_total = 0.0
         gradient_norms: list[float] = []
         batches = self.train_batches(epoch)
         for step, batch in enumerate(batches):
@@ -143,6 +147,21 @@ class Trainer:
                 self.model, batch["feature"], len(labels), self.config.device
             )
             loss = self.loss_fn(predicted, labels)
+            batch_weight = float(len(labels))
+            if self.config.weighting == "pair":
+                if loss.shape != labels.shape or "pair_weight" not in batch:
+                    raise ValueError(
+                        "Pair weighting requires per-event losses and prepared pair weights"
+                    )
+                weights = batch["pair_weight"].to(self.config.device)
+                if (
+                    weights.shape != labels.shape
+                    or not torch.isfinite(weights).all()
+                    or (weights <= 0).any()
+                ):
+                    raise ValueError("Invalid pair weights")
+                batch_weight = float(weights.sum())
+                loss = (loss * weights).sum() / weights.sum()
             if loss.ndim != 0 or not torch.isfinite(loss):
                 raise ValueError(f"Nonfinite training loss at epoch {epoch}, step {step}")
             loss.backward()
@@ -151,14 +170,15 @@ class Trainer:
                 self.model.parameters(), float("inf"), error_if_nonfinite=True
             )
             self.optimizer.step()
-            loss_sum += loss.item() * len(labels)
+            loss_sum += loss.item() * batch_weight
+            weight_total += batch_weight
             row_count += len(labels)
             gradient_norms.append(float(norm))
 
         if row_count == 0:
             raise ValueError("Empty training epoch")
         return {
-            "train_loss": loss_sum / row_count,
+            "train_loss": loss_sum / weight_total,
             "train_rows": row_count,
             "gradient_norm_mean": sum(gradient_norms) / len(gradient_norms),
         }
