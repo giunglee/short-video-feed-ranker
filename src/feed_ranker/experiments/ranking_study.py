@@ -20,12 +20,11 @@ import torch
 
 from feed_ranker.artifacts import collect_run_provenance, sha256, write_json
 from feed_ranker.experiments.ranking_architecture import (
-    ARCHITECTURES,
     METRICS,
-    Recipe,
     fit_recipe,
     score_checkpoint,
 )
+from feed_ranker.models.ranking import ARCHITECTURES, Recipe
 
 
 def initial_recipes() -> list[Recipe]:

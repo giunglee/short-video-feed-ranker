@@ -14,16 +14,16 @@ import torch
 
 from feed_ranker.artifacts import sha256
 from feed_ranker.data.kuairec_preprocessor import KuaiRecPreprocessor
-from feed_ranker.experiments.ranking_architecture import (
-    Recipe,
-    build_architecture,
-    feature_config,
-)
 from feed_ranker.experiments.ranking_study import (
     RankingStudy,
     assert_finalists_unchanged,
     best_run,
     needs_longer_budget,
+)
+from feed_ranker.models.ranking import (
+    Recipe,
+    build_architecture,
+    feature_config,
 )
 from feed_ranker.training.evaluation import RegressionEvaluator
 from feed_ranker.training.losses import TargetMAE

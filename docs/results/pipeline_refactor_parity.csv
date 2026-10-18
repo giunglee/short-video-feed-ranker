@@ -1,0 +1,6 @@
+seed,candidate_exports_exact,full_pool_predictions_exact,replay_metrics_exact,mf_model_queries,selected_prediction_max_abs_diff,changed_top10_users,cap2_ndcg10_delta
+42,9,1030046,True,7176,4.76837158203125e-07,0,0.0
+43,9,1030046,True,7176,3.5762786865234375e-07,0,0.0
+44,9,1030046,True,7176,4.76837158203125e-07,0,0.0
+45,9,1030046,True,7176,4.76837158203125e-07,0,0.0
+46,9,1030046,True,7176,4.76837158203125e-07,0,0.0

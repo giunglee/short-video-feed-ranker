@@ -13,14 +13,16 @@ import torch
 
 from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.data.recall import VERSION
-from feed_ranker.experiments.deep_funnel import (
+from feed_ranker.data.recommendation import (
+    KuaiRecFeatures,
     encode_candidates,
     pair_codes,
-    predict,
-    run,
     training_profiles,
 )
-from feed_ranker.experiments.ranking_architecture import Recipe, build_architecture, feature_config
+from feed_ranker.experiments.deep_funnel import run
+from feed_ranker.models.ranking import Recipe, build_architecture, feature_config
+from feed_ranker.recommendation.contracts import Request
+from feed_ranker.recommendation.ranking import ModelRanker, predict
 
 
 class DeepFunnelTests(unittest.TestCase):
@@ -75,6 +77,24 @@ class DeepFunnelTests(unittest.TestCase):
             np.testing.assert_array_equal(got[key], other[key])
         with self.assertRaises(ValueError):
             encode_candidates(raw.assign(video_duration=0), self.meta, self.profiles)
+
+    def test_actual_ranker_scores_selected_items_with_frozen_features(self) -> None:
+        features = KuaiRecFeatures(
+            self.meta,
+            self.profiles,
+            pd.Series([5000.0, 10000.0, 15000.0, 20000.0], index=[100, 200, 300, 400]),
+        )
+        recipe = Recipe("deep", hidden=(4,))
+        model = build_architecture(feature_config(self.meta, recipe), recipe, 42)
+        ranker = ModelRanker(model, features, "synthetic-checkpoint")
+        all_items = np.array([100, 200, 300, 400])
+        full = predict(model, features.build(np.full(4, 10), all_items))
+        selected = np.array([400, 100])
+        result = ranker.score(Request("q", 10), selected)
+        np.testing.assert_array_equal(result.items, selected)
+        np.testing.assert_allclose(result.scores, full[[3, 0]], rtol=1e-6, atol=1e-6)
+        empty = ranker.score(Request("empty", 10), np.empty(0, dtype=int))
+        self.assertEqual(len(empty.scores), 0)
 
     def test_conflicting_profiles_and_invalid_ids_fail(self) -> None:
         frame = self.profiles.reset_index()

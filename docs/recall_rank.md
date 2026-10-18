@@ -7,6 +7,77 @@ not a demonstrated funnel improvement over historical capped Wide & Deep.**
 
 **Observed held-out pool → Retrieve M unique videos → Fixed Deep ranker → Top 10.**
 
+## Reusable recommendation execution
+
+The single-retriever pipeline separates execution from its offline benchmark:
+
+```mermaid
+flowchart LR
+    Q["Request + eligible raw video IDs"] --> R["Popularity / cooccurrence / MF"]
+    R --> C["Up to M supported candidates"]
+    C --> S["Ranker: features + checkpoint"]
+    S --> K["Top K + score/source trace"]
+    K --> E["Offline evaluator"]
+    L["Held-out labels + full-pool ideal"] --> E
+```
+
+- **Execution:** `RecommendationPipeline.recommend(request, scope)` calls one
+  retriever, scores only its candidates, and returns top K plus a compact trace.
+  Requests and stage results contain raw IDs, never label arrays or pool offsets.
+- **Replaceable components:** retrievers implement `retrieve(request, scope, limit)`;
+  rankers implement `score(request, items)`. Construct the pipeline with different
+  instances; no registry or experiment-specific orchestration is required.
+- **Features and identity:** the Deep adapter loads its checkpoint and train-derived
+  lookups once. Dense embedding IDs stay inside adapters. Query IDs are distinct
+  from user IDs, allowing another dataset adapter to represent repeated requests.
+- **Eligibility:** callers supply the permitted catalog subset and seen-item policy.
+  The KuaiRec adapter supplies observed held-out IDs, without their labels. This is
+  an offline evaluation restriction, not a restriction in the pipeline interface.
+- **Failure semantics:** unsupported retrieval items are omitted and counted;
+  malformed scores, duplicate IDs, ineligible candidates, and ranker misalignment
+  fail explicitly. There is no implicit popularity fill or random fallback.
+- **Evaluation:** the evaluator consumes the already ordered final list. The full
+  eligible pool still defines IDCG. Full-pool scoring is a separate benchmark
+  diagnostic; a recommendation request needs scores only for its own candidates.
+
+```python
+from feed_ranker.recommendation.contracts import CandidateScope, Request
+from feed_ranker.recommendation.pipeline import RecommendationPipeline
+
+# Construct retriever and ranker once from their training artifacts.
+# PopularityRetriever, CooccurrenceRetriever and MFRetriever share this interface.
+pipeline = RecommendationPipeline(retriever, ranker, budget=50, k=10)
+response = pipeline.recommend(
+    Request(query_id="request-001", user_id=raw_user_id),
+    CandidateScope(eligible_video_ids),
+)
+recommended_ids = response.items
+# response.retrieved / response.ranked retain aligned scores and source order;
+# response.final_positions identifies the selected positions in those arrays.
+```
+
+Implementation responsibilities:
+
+- [`recommendation/pipeline.py`](../src/feed_ranker/recommendation/pipeline.py): execution and stage checks.
+- [`recommendation/retrieval.py`](../src/feed_ranker/recommendation/retrieval.py),
+  [`ranking.py`](../src/feed_ranker/recommendation/ranking.py): current model adapters.
+- [`data/recommendation.py`](../src/feed_ranker/data/recommendation.py): train-fitted candidate features.
+- [`data/funnel.py`](../src/feed_ranker/data/funnel.py): observed-query and artifact adapters.
+- [`training/funnel_evaluation.py`](../src/feed_ranker/training/funnel_evaluation.py): label-based metrics.
+
+The CLI below supports `--execution replay` (default, keyed saved retrieval scores
+and cached rank predictions) and `--execution model` (actual retrievers and selected-
+candidate ranker inference). Both use the same pipeline. The CLI additionally
+computes the full-pool reference and checks frozen candidate parity; it is a
+benchmark, not a serving endpoint. Its trace exports record source rank, retrieval
+score, ranking score and final rank, with input/checkpoint hashes in the manifest.
+
+This version runs one retrieval channel at a time. Multi-channel allocation and
+merging remain a separate change. Exact cooccurrence retains a quadratic item
+similarity matrix suited to this bounded catalog; the refactor does not establish
+large-catalog memory/latency suitability. Observed-pool results are not full-catalog
+recommendation estimates.
+
 ## What is fixed, and why?
 
 | Boundary | Contract | Rationale |
@@ -100,6 +171,18 @@ Earlier raw-ranker five-seed evidence remains [historical](results/funnel_valida
 
 ## Verification and reproduction
 
+**Pipeline refactor:** [five-seed parity evidence](results/pipeline_refactor_parity.csv)
+records exact reproduction of all 45 candidate exports, full-pool predictions,
+per-user/duration metrics and aggregate metrics against the original implementation.
+Actual MF → Deep inference on selected M50 candidates preserves every user's top-10
+and final NDCG across all five seeds; maximum prediction difference is 4.77e-7.
+All three actual retrievers preserve the saved top-100 ordering for all 7,176 users
+(seed42 for MF). Cooccurrence's query-wise versus batch-wise floating-point scores
+differ by at most 4.89e-4, with unchanged candidate ordering. The refactored tree
+passes 72 synthetic tests and Ruff. These are migration checks, not new quality gains.
+
+Original frozen-evaluation checks:
+
 - 64 isolated-tree tests and Ruff pass, including a synthetic Deep funnel with no
   test dataset, profile/OOV handling, duration boundaries, label-independent inputs
   and wrong-checkpoint rejection.
@@ -127,5 +210,6 @@ python -m feed_ranker.experiments.deep_funnel \
 
 The output includes keyed rank predictions and a provenance manifest, per-user
 metrics, raw-ID candidates, duration diagnostics and a full-pool ranker reference.
-The legacy `recall_rank` scorer remains restricted to its historical IDs/duration
-models; do not pass profile-based Deep weights through that adapter.
+The superseded `recall_rank` and `ranking_target` experiment runners were removed
+from active source. Reproduce those historical pilots from their original source
+snapshots or commit `64f7a40`; the current entrypoint is `deep_funnel`.

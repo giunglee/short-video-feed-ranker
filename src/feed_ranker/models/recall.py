@@ -22,6 +22,29 @@ def incidence(data: RecallData) -> torch.Tensor:
     return matrix
 
 
+class CosineCooccurrence:
+    """Exact cosine item similarities fitted from binary positive-user incidence.
+
+    Intended for the bounded KuaiRec catalog: the similarity matrix is quadratic
+    in catalog size. Both batch evaluation and request retrieval use this scorer.
+    """
+
+    def __init__(self, positive_incidence: torch.Tensor) -> None:
+        if (
+            positive_incidence.ndim != 2
+            or not ((positive_incidence == 0) | (positive_incidence == 1)).all()
+        ):
+            raise ValueError("Require binary positive-user incidence")
+        self.incidence = positive_incidence.detach().cpu().float().clone()
+        norms = self.incidence.sum(0).sqrt().clamp_min(1)
+        self.similarity = self.incidence.T @ self.incidence
+        self.similarity.div_(norms[:, None]).div_(norms[None, :])
+        self.similarity.fill_diagonal_(0)
+
+    def score_users(self, start: int, stop: int) -> np.ndarray:
+        return (self.incidence[start:stop] @ self.similarity).numpy()
+
+
 def baseline_scores(data: RecallData, method: str) -> tuple[np.ndarray, dict[str, int]]:
     """Scores aligned with flattened eligible pools; -inf means unsupported."""
     h = incidence(data)
@@ -29,14 +52,11 @@ def baseline_scores(data: RecallData, method: str) -> tuple[np.ndarray, dict[str
     if method == "popularity":
         scores = counts.numpy()[data.pools.items].copy()
     elif method == "cooccurrence":
-        norms = counts.sqrt().clamp_min(1)
-        similarity = h.T @ h
-        similarity.div_(norms[:, None]).div_(norms[None, :])
-        similarity.fill_diagonal_(0)
+        model = CosineCooccurrence(h)
         scores = np.empty(len(data.pools.items), dtype=np.float32)
         for start in range(0, len(data.users), 64):
             stop = min(start + 64, len(data.users))
-            values = (h[start:stop] @ similarity).numpy()
+            values = model.score_users(start, stop)
             lo, hi = data.pools.offsets[[start, stop]]
             scores[lo:hi] = values[data.pools.users[lo:hi] - start, data.pools.items[lo:hi]]
     else:
@@ -63,6 +83,10 @@ class BPRMF(nn.Module):
     ) -> torch.Tensor:
         return (self.user(users) * (self.item(positive) - self.item(negative))).sum(-1)
 
+    def score_pairs(self, users: torch.Tensor, items: torch.Tensor) -> torch.Tensor:
+        """Score aligned internal IDs; eligibility belongs to the retrieval adapter."""
+        return (self.user(users) * self.item(items)).sum(-1)
+
     @torch.no_grad()
     def pool_scores(self, data: RecallData) -> np.ndarray:
         self.eval()
@@ -71,7 +95,7 @@ class BPRMF(nn.Module):
             stop = min(start + 32768, len(scores))
             users = torch.from_numpy(data.pools.users[start:stop])
             items = torch.from_numpy(data.pools.items[start:stop])
-            scores[start:stop] = (self.user(users) * self.item(items)).sum(-1).numpy()
+            scores[start:stop] = self.score_pairs(users, items).numpy()
         allowed = data.supported[data.pools.users] & self.item_updated.numpy()[data.pools.items]
         scores[~allowed] = -np.inf
         return scores

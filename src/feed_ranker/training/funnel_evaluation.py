@@ -11,30 +11,9 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import torch
-from torch import nn
 
-from feed_ranker.training.recall_evaluation import tie_keys
-
-
-class TargetMAE(nn.Module):
-    """Transform targets only; raw batch labels and unconstrained predictions survive."""
-
-    def __init__(self, cap: float | None = None) -> None:
-        super().__init__()
-        if cap is not None and (not np.isfinite(cap) or cap <= 0):
-            raise ValueError("Target cap must be finite and positive")
-        self.cap = cap
-
-    def forward(self, predicted: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        if (
-            predicted.shape != labels.shape
-            or not torch.isfinite(labels).all()
-            or (labels < 0).any()
-        ):
-            raise ValueError("MAE requires matching shapes and finite nonnegative labels")
-        target = labels if self.cap is None else labels.clamp(max=self.cap)
-        return torch.nn.functional.l1_loss(predicted, target)
+from feed_ranker.recommendation.ordering import ordered_positions, tie_keys
+from feed_ranker.training.losses import TargetMAE as TargetMAE
 
 
 @dataclass
@@ -80,8 +59,14 @@ class GainPool:
         return float(np.dot(gains[: self.k], self.discounts[: min(self.k, len(gains))]))
 
     def order(self, scores: np.ndarray, positions: np.ndarray) -> np.ndarray:
-        valid = positions[np.isfinite(scores[positions])]
-        return valid[np.lexsort((self.items[valid], self.ties[valid], -scores[valid]))]
+        users = np.searchsorted(self.offsets[1:], positions, side="right")
+        if not len(positions):
+            return positions
+        if not (users == users[0]).all():
+            raise ValueError("Ordering must stay within one query")
+        return positions[
+            ordered_positions(scores[positions], int(self.users[users[0]]), self.items[positions])
+        ]
 
     def candidates(self, scores: np.ndarray, budget: int) -> list[np.ndarray]:
         if scores.shape != self.items.shape or np.isnan(scores).any() or np.isposinf(scores).any():
@@ -96,19 +81,38 @@ class GainPool:
     ) -> tuple[dict[str, float | int | None], pd.DataFrame]:
         if predictions.shape != self.items.shape or not np.isfinite(predictions).all():
             raise ValueError("Require finite predictions for every eligible pair")
-        if candidates is not None and len(candidates) != len(self.users):
-            raise ValueError("Candidate user count differs from pool")
+        if candidates is None:
+            candidates = [np.arange(lo, hi) for lo, hi in zip(self.offsets[:-1], self.offsets[1:])]
+        finals = [self.order(predictions, selected)[: self.k] for selected in candidates]
+        metrics, frame = self.evaluate_ordered(candidates, finals)
+        metrics["fraction_prediction_gt2"] = float((predictions > 2).mean())
+        return metrics, frame
+
+    def evaluate_ordered(
+        self,
+        candidates: list[np.ndarray],
+        finals: list[np.ndarray],
+    ) -> tuple[dict[str, float | int | None], pd.DataFrame]:
+        """Measure already executed recommendations; never score or reorder them."""
+        if len(candidates) != len(self.users) or len(finals) != len(self.users):
+            raise ValueError("Candidate/final query count differs from pool")
         rows = []
         for u, user in enumerate(self.users):
             lo, hi = self.offsets[u : u + 2]
-            selected = np.arange(lo, hi) if candidates is None else candidates[u]
+            selected = candidates[u]
             if (
                 (selected < lo).any()
                 or (selected >= hi).any()
                 or len(np.unique(selected)) != len(selected)
             ):
                 raise ValueError("Candidates must be unique positions in this user's pool")
-            final = self.order(predictions, selected)[: self.k]
+            final = finals[u]
+            if (
+                len(final) != min(self.k, len(selected))
+                or len(np.unique(final)) != len(final)
+                or not np.isin(final, selected).all()
+            ):
+                raise ValueError("Final list must be a unique top-K subset of candidates")
             ideal = self.ideals[u]
             row = {
                 "user_id": int(user),
@@ -138,7 +142,6 @@ class GainPool:
                 "utility_per_slot10_all_users": float(frame.utility_per_slot10.mean()),
                 "mean_returned": float(frame.returned.mean()),
                 "mean_final_slots": float(frame.final_slots.mean()),
-                "fraction_prediction_gt2": float((predictions > 2).mean()),
             }
         )
         return result, frame
@@ -151,6 +154,12 @@ class GainPool:
         Group ideals come from the full pool; group ceilings need not be attainable
         simultaneously under one K budget. Duration is diagnostic only.
         """
+        return self.duration_ordered([self.order(predictions, c)[: self.k] for c in candidates])
+
+    def duration_ordered(self, finals: list[np.ndarray]) -> pd.DataFrame:
+        """Duration diagnostics for executed final lists, at their actual positions."""
+        if len(finals) != len(self.users):
+            raise ValueError("Final query count differs from pool")
         seconds = self.duration_ms / 1000
         masks = {
             "le10s": seconds <= 10,
@@ -161,7 +170,7 @@ class GainPool:
         rows = []
         for u, user in enumerate(self.users):
             lo, hi = self.offsets[u : u + 2]
-            final = self.order(predictions, candidates[u])[: self.k]
+            final = finals[u]
             for name, mask in masks.items():
                 ideal = self.dcg(np.sort(self.gains[lo:hi] * mask[lo:hi])[::-1])
                 actual = self.dcg(self.gains[final] * mask[final])

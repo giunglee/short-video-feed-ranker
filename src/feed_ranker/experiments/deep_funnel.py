@@ -1,8 +1,7 @@
-"""Evaluate frozen capped Deep checkpoints on unchanged observed recall pools.
+"""Configure the single-retriever pipeline and export a frozen KuaiRec benchmark.
 
-This is inference only. Profile codes come from prepared training rows; duration
-and its band use training-only video medians. Snapshot timing remains unverified.
-No feature study, checkpoint selection, retriever fitting or test access occurs.
+Replay and model execution use the same pipeline. Full-pool prediction is an
+explicit offline reference; recommendation itself ranks only retrieved items.
 """
 
 from __future__ import annotations
@@ -17,80 +16,51 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import torch
-from torch import nn
 
 from feed_ranker.artifacts import collect_run_provenance, sha256, write_json
-from feed_ranker.data.kuairec_preprocessor import duration_band
+from feed_ranker.data.funnel import (
+    ObservedQueries,
+    load_retriever,
+    make_pool,
+    result_positions,
+    verify_split_membership,
+)
 from feed_ranker.data.recall import RecallData
-from feed_ranker.experiments.ranking_architecture import Recipe, build_architecture, make_dataset
-from feed_ranker.experiments.ranking_target import make_pool
-from feed_ranker.experiments.recall_rank import candidate_features
+from feed_ranker.data.recommendation import encode_candidates
+from feed_ranker.recommendation.pipeline import RecommendationPipeline
+from feed_ranker.recommendation.ranking import ModelRanker, load_deep_ranker, predict
+from feed_ranker.recommendation.replay import ReplayRanker, ReplayRetriever, ScoreTable
 from feed_ranker.training.recall_evaluation import evaluate as evaluate_binary
 
-PROFILES = ["age_range", "follow_user_num_range"]
 
-
-def pair_codes(frame: pd.DataFrame, prefix: str = "") -> np.ndarray:
-    """Collision-free packing for the nonnegative uint32 KuaiRec identifiers."""
-    values = []
-    for name in ("user_id", "video_id"):
-        v = frame[prefix + name].to_numpy()
-        if v.dtype.kind not in "iu" or (v < 0).any() or (v >= 2**32).any():
-            raise ValueError("Pair IDs must be uint32-compatible integers")
-        values.append(v.astype(np.uint64))
-    return (values[0] << np.uint64(32)) | values[1]
-
-
-def training_profiles(frame: pd.DataFrame) -> pd.DataFrame:
-    """Require a single encoded profile per training user; never aggregate conflicts."""
-    unique = frame[["raw_user_id", *PROFILES]].drop_duplicates()
-    if unique.raw_user_id.duplicated().any() or unique[PROFILES].isna().any().any():
-        raise ValueError("Conflicting or missing training profile codes")
-    for name in PROFILES:
-        if unique[name].dtype.kind not in "iu" or unique[name].lt(0).any():
-            raise ValueError("Profile codes must be nonnegative integers")
-    return unique.set_index("raw_user_id")
-
-
-def encode_candidates(
-    raw: pd.DataFrame,
-    metadata: dict[str, Any],
-    profiles: pd.DataFrame,
-) -> dict[str, np.ndarray]:
-    """Build only declared model inputs; held-out labels and event context are ignored."""
-    duration = raw.video_duration.to_numpy(dtype=np.float32)
-    if not np.isfinite(duration).all() or (duration <= 0).any():
-        raise ValueError("Require positive finite candidate durations")
-    result = {"video_duration": duration}
-    for name, values in {
-        "user_id": raw.user_id,
-        "video_id": raw.video_id,
-        "duration_band": duration_band(raw.video_duration),
-    }.items():
-        mapping = {str(v): i + 1 for i, v in enumerate(metadata["vocab"][name])}
-        result[name] = values.astype("string").map(mapping).fillna(0).to_numpy(dtype=np.int64)
-    aligned = profiles.reindex(raw.user_id.to_numpy())
-    for name in PROFILES:
-        result[name] = aligned[name].fillna(0).to_numpy(dtype=np.int64)
-        if (result[name] >= len(metadata["vocab"][name]) + 1).any():
-            raise ValueError("Training profile code exceeds frozen vocabulary")
-    return result
-
-
-@torch.no_grad()
-def predict(model: nn.Module, features: dict[str, np.ndarray]) -> np.ndarray:
-    model.eval()
-    n = len(features["video_duration"])
-    outputs = []
-    for start in range(0, n, 8192):
-        batch = {
-            name: torch.from_numpy(v[start : start + 8192].copy()) for name, v in features.items()
+def verify_predictions(
+    ranker: ModelRanker, ranking_data: Path, reference_trace: Path
+) -> dict[str, int | float]:
+    """Independent prepared-feature reconstruction and frozen prediction parity."""
+    check = next(
+        pq.ParquetFile(ranking_data / "val.parquet").iter_batches(batch_size=8192)
+    ).to_pandas()
+    raw = pd.DataFrame(
+        {
+            "user_id": check.raw_user_id,
+            "video_id": check.raw_video_id,
+            "video_duration": check.video_duration,
         }
-        value = model(batch).reshape(-1).cpu().numpy()
-        if not np.isfinite(value).all():
-            raise ValueError("Nonfinite Deep predictions")
-        outputs.append(value)
-    return np.concatenate(outputs) if outputs else np.empty(0, dtype=np.float32)
+    )
+    direct = encode_candidates(raw, ranker.features.metadata, ranker.features.profiles)
+    for name, values in direct.items():
+        np.testing.assert_array_equal(
+            values, check[name].to_numpy(), err_msg=f"Feature parity: {name}"
+        )
+    predictions = predict(ranker.model, direct)
+    trace = next(pq.ParquetFile(reference_trace).iter_batches(batch_size=len(check))).to_pandas()
+    np.testing.assert_array_equal(trace.raw_user_id, check.raw_user_id)
+    np.testing.assert_array_equal(trace.raw_video_id, check.raw_video_id)
+    np.testing.assert_allclose(predictions, trace.prediction, atol=1e-6, rtol=1e-6)
+    return {
+        "feature_parity_rows": len(check),
+        "prediction_parity_max_abs": float(np.abs(predictions - trace.prediction.to_numpy()).max()),
+    }
 
 
 def run(
@@ -102,92 +72,37 @@ def run(
     runs: list[Path],
     output: Path,
     threads: int = 1,
+    execution: str = "replay",
 ) -> dict[str, Any]:
     if output.exists():
         raise FileExistsError(output)
-    if threads < 1:
-        raise ValueError("Threads must be positive")
+    if threads < 1 or execution not in ("replay", "model"):
+        raise ValueError("Require positive threads and replay/model execution")
     torch.set_num_threads(threads)
-    if sha256(checkpoint) != checkpoint_sha256:
-        raise ValueError("Checkpoint differs from the frozen finalist")
-    saved = torch.load(checkpoint, weights_only=True, map_location="cpu")
-    meta = saved["metadata"]
-    recipe = Recipe(**meta["recipe"])
-    if recipe.architecture != "deep" or recipe.feature_set != "profiles" or meta["target_cap"] != 2:
-        raise ValueError("Require frozen capped Deep/profile recipe")
-    if saved["training"]["selection_metric"] != "user_xauc":
-        raise ValueError("Preserve the standalone user-XAUC checkpoint selector")
-    if sha256(ranking_data / "meta.json") != meta["data_manifest_sha256"]:
-        raise ValueError("Frozen ranking data manifest mismatch")
-    dataset = make_dataset(ranking_data, recipe)
-    hashes = {
-        str(p): sha256(p)
-        for p in (checkpoint, reference_trace, ranking_data / "meta.json", data_path / "meta.json")
-    }
-    recall_meta = json.loads((data_path / "meta.json").read_text())
-    if dataset.meta["sources"]["big_matrix.csv"] != recall_meta["raw_big_sha256"]:
-        raise ValueError("Ranking and recall use different source data")
-    # Exact pair membership, not just matching split seeds or row counts.
-    profile_parts = []
-    for split in ("train", "val"):
-        path = ranking_data / f"{split}.parquet"
-        hashes[str(path)] = sha256(path)
-        if hashes[str(path)] != dataset.meta["splits"][split]["sha256"]:
-            raise ValueError("Prepared ranking split changed")
-        codes = []
-        columns = (
-            ["raw_user_id", "raw_video_id", *PROFILES]
-            if split == "train"
-            else ["raw_user_id", "raw_video_id"]
-        )
-        for batch in pq.ParquetFile(path).iter_batches(batch_size=131072, columns=columns):
-            frame = batch.to_pandas()
-            codes.append(pair_codes(frame, "raw_"))
-            if split == "train":
-                profile_parts.append(frame[["raw_user_id", *PROFILES]].drop_duplicates())
-        recall_pairs = pd.read_parquet(
-            data_path / f"{split}.parquet", columns=["user_id", "video_id"]
-        )
-        if not np.array_equal(
-            np.unique(np.concatenate(codes)), np.unique(pair_codes(recall_pairs))
-        ):
-            raise ValueError(f"Ranking/recall {split} pair membership differs")
-        del codes, recall_pairs
-    profiles = training_profiles(pd.concat(profile_parts, ignore_index=True))
-    del profile_parts
-    data = RecallData(data_path)
-    for name in data.meta["files"]:
-        hashes[str(data_path / name)] = sha256(data_path / name)
-    model = build_architecture(dataset.config.feature, recipe, saved["training"]["seed"])
-    model.load_state_dict(saved["model"])
-    # Independent validation-feature reconstruction + saved prediction parity.
-    check = next(
-        pq.ParquetFile(ranking_data / "val.parquet").iter_batches(batch_size=8192)
-    ).to_pandas()
-    raw_check = check.rename(
-        columns={"raw_user_id": "user_id_check", "raw_video_id": "video_id_check"}
+    ranker, saved = load_deep_ranker(
+        checkpoint, checkpoint_sha256, ranking_data, data_path / "item_duration.parquet"
     )
-    raw_check = pd.DataFrame(
+    data = RecallData(data_path)
+    hashes = verify_split_membership(data, ranking_data)
+    hashes.update(
         {
-            "user_id": raw_check.user_id_check,
-            "video_id": raw_check.video_id_check,
-            "video_duration": raw_check.video_duration,
+            str(p): sha256(p)
+            for p in (
+                checkpoint,
+                reference_trace,
+                ranking_data / "meta.json",
+                data_path / "meta.json",
+                *(data_path / name for name in data.meta["files"]),
+            )
         }
     )
-    direct = encode_candidates(raw_check, dataset.meta, profiles)
-    for name, values in direct.items():
-        np.testing.assert_array_equal(
-            values, check[name].to_numpy(), err_msg=f"Feature parity: {name}"
-        )
-    parity_predictions = predict(model, direct)
-    trace = next(pq.ParquetFile(reference_trace).iter_batches(batch_size=len(check))).to_pandas()
-    np.testing.assert_array_equal(trace.raw_user_id, check.raw_user_id)
-    np.testing.assert_array_equal(trace.raw_video_id, check.raw_video_id)
-    np.testing.assert_allclose(parity_predictions, trace.prediction, atol=1e-6, rtol=1e-6)
-    raw = candidate_features(data)
-    features = encode_candidates(raw, dataset.meta, profiles)
-    scores = predict(model, features)
-    pool = make_pool(data)
+    parity = verify_predictions(ranker, ranking_data, reference_trace)
+    queries, pool = ObservedQueries(data), make_pool(data)
+    # Offline full-pool reference and reusable keyed replay cache, never request inputs.
+    users = data.users[data.pools.users]
+    scores = predict(ranker.model, ranker.features.build(users, queries.items))
+    replay_ranker = ReplayRanker(ScoreTable(queries.score_frame(scores), checkpoint_sha256))
+    active_ranker = ranker if execution == "model" else replay_ranker
     output.mkdir(parents=True)
     write_json(output / "provenance.json", collect_run_provenance())
     shutil.copytree(
@@ -196,17 +111,15 @@ def run(
         ignore=shutil.ignore_patterns("__pycache__"),
     )
     np.save(output / "pool_predictions.npy", scores)
-    raw[["user_id", "video_id"]].assign(score=scores).to_parquet(
+    pd.DataFrame({"user_id": users, "video_id": queries.items, "score": scores}).to_parquet(
         output / "rank_predictions.parquet", index=False
     )
     reports = {}
-    seen_methods = set()
     for directory in runs:
         config = json.loads((directory / "config.json").read_text())
         method = config["method"]
-        if method not in {"popularity", "cooccurrence", "mf"} or method in seen_methods:
+        if method not in ("popularity", "cooccurrence", "mf") or method in reports:
             raise ValueError("Provide distinct reference retrieval methods")
-        seen_methods.add(method)
         if config["data_manifest_sha256"] != sha256(data_path / "meta.json"):
             raise ValueError("Retriever data mismatch")
         if method == "mf" and config["seed"] != saved["training"]["seed"]:
@@ -214,23 +127,63 @@ def run(
         for name in ("config.json", "scores.npy"):
             hashes[str(directory / name)] = sha256(directory / name)
         recall_scores = np.load(directory / "scores.npy", allow_pickle=False)
+        retriever = ReplayRetriever(
+            method,
+            ScoreTable(
+                queries.score_frame(recall_scores),
+                hashes[str(directory / "scores.npy")],
+                allow_unsupported=True,
+            ),
+        )
+        if execution == "model":
+            retriever = load_retriever(data, directory)
+            if method == "mf":
+                hashes[str(directory / "best.pt")] = sha256(directory / "best.pt")
         binary, _, _ = evaluate_binary(data, recall_scores)
         reports[method] = {"binary": binary, "budgets": {}}
         for m in (20, 50, 100):
-            candidates = pool.candidates(recall_scores, m)
-            metrics, frame = pool.evaluate(scores, candidates)
-            assert (frame.cap2_ndcg10 <= frame.candidate_oracle_ndcg10 + 1e-12).all()
+            pipeline = RecommendationPipeline(retriever, active_ranker, budget=m, k=pool.k)
+            results = [pipeline.recommend(request, scope) for request, scope in queries]
+            candidates, finals = result_positions(pool, results)
+            expected = pool.candidates(recall_scores, m)
+            for actual, reference in zip(candidates, expected, strict=True):
+                np.testing.assert_array_equal(actual, reference, err_msg="Frozen retrieval parity")
+            metrics, frame = pool.evaluate_ordered(candidates, finals)
+            metrics["fraction_prediction_gt2"] = float((scores > 2).mean())
             frame["positive_history"] = [len(v) for v in data.positive]
+            frame["pool_shortfall"] = [r.pool_shortfall for r in results]
+            frame["method_shortfall"] = [r.method_shortfall for r in results]
             frame.to_parquet(output / f"{method}_m{m}_per_user.parquet", index=False)
             reports[method]["budgets"][str(m)] = metrics
-            packed = np.full((len(data.users), m), -1, dtype=np.int64)
-            for u, positions in enumerate(candidates):
-                packed[u, : len(positions)] = pool.items[positions]
+            packed = np.full((len(results), m), -1, dtype=np.int64)
+            traces = []
+            for u, result in enumerate(results):
+                packed[u, : len(result.retrieved.items)] = result.retrieved.items
+                traces.append(
+                    pd.DataFrame(
+                        {
+                            "query_id": result.request.query_id,
+                            "video_id": result.retrieved.items,
+                            "source_rank": np.arange(1, len(result.retrieved.items) + 1),
+                            "retrieval_score": result.retrieved.scores,
+                            "ranking_score": result.ranked.scores,
+                            "final_rank": pd.Series(
+                                np.arange(1, len(result.items) + 1), index=result.items
+                            )
+                            .reindex(result.retrieved.items)
+                            .fillna(0)
+                            .to_numpy(dtype=int),
+                        }
+                    )
+                )
             np.savez_compressed(
                 output / f"{method}_m{m}_candidates.npz", users=data.users, items=packed
             )
+            pd.concat(traces, ignore_index=True).to_parquet(
+                output / f"{method}_m{m}_trace.parquet", index=False
+            )
             if m == 50:
-                pool.duration_report(scores, candidates).to_parquet(
+                pool.duration_ordered(finals).to_parquet(
                     output / f"{method}_duration.parquet", index=False
                 )
     full, _ = pool.evaluate(scores)
@@ -240,15 +193,13 @@ def run(
     result = {
         "seed": saved["training"]["seed"],
         "epoch": saved["epoch"],
-        "recipe": meta["recipe"],
+        "recipe": saved["metadata"]["recipe"],
         "checkpoint_sha256": checkpoint_sha256,
         "input_hashes": hashes,
-        "feature_parity_rows": len(check),
-        "prediction_parity_max_abs": float(
-            np.abs(parity_predictions - trace.prediction.to_numpy()).max()
-        ),
+        **parity,
         "split_pair_membership": "exact train and validation",
         "test_evaluated": False,
+        "execution": execution,
         "feature_policy": "Training profiles; training-median duration and derived band; snapshot timing unverified",
         "methods": reports,
         "full_pool": full,
@@ -260,7 +211,7 @@ def run(
             "prediction_sha256": sha256(output / "rank_predictions.parquet"),
             "recall_data_manifest_sha256": sha256(data_path / "meta.json"),
             "checkpoint_sha256": checkpoint_sha256,
-            "ranker_name": f"Frozen PR6 capped Deep seed{saved['training']['seed']}",
+            "ranker_name": f"Frozen PR6 capped Deep seed{result['seed']}",
             "feature_policy": result["feature_policy"],
             "checkpoint_selection": "validation user-XAUC; earliest maximum",
             "scope": "Frozen architecture integration; feature exploration separate",
@@ -274,8 +225,9 @@ def main() -> None:
     for name in ("data", "ranking-data", "checkpoint", "reference-trace", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--checkpoint-sha256", required=True)
-    parser.add_argument("--runs", type=Path, nargs=3, required=True)
+    parser.add_argument("--runs", type=Path, nargs="+", required=True)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--execution", choices=("replay", "model"), default="replay")
     args = parser.parse_args()
     run(
         args.data,
@@ -286,6 +238,7 @@ def main() -> None:
         args.runs,
         args.output,
         args.threads,
+        args.execution,
     )
 
 
