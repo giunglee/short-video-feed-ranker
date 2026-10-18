@@ -20,6 +20,10 @@ not next-watch prediction or catalog-wide online performance.
 Missing/tied timestamps and inconsistent repeated behavior are heuristic limitations.
 Candidate metadata at the rank boundary uses training-only median video duration.
 
+The downstream integration uses the frozen capped Deep recipe from the ranking
+architecture study. Changing that ranker does not change these retrieval results.
+Historical downstream label/negative pilots below used capped Wide & Deep.
+
 ## Methods and training
 
 - **Popularity:** number of positive training users per video.
@@ -68,7 +72,7 @@ See [audit aggregates](results/recall_curve_audit.csv).
 and trained seed42 MF. Only training positives changed; original negatives,
 validation binary labels, Recall50 checkpoint rule and pools stayed fixed. Both MF
 arms used15epochs;8s has9.36% more pairs/updates. Best epochs10s/8s:8/7.
-Reference-label MF Recall50 fell .623405→.621999. Fixed capped-ranker final utility
+Reference-label MF Recall50 fell .623405→.621999. Historical capped Wide & Deep final utility
 also declined slightly; see [integration results](recall_rank.md#curve-sensitivity).
 **Recommendation: retain10s.** This is no proof of optimality or seed-robust rejection;
 12s was audited but not trained. Do not compare binary Recall under changing labels.
