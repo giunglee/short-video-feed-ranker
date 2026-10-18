@@ -51,15 +51,12 @@ class CooccurrenceRetriever:
     name = "cooccurrence"
 
     def __init__(
-        self, users: np.ndarray, items: np.ndarray, incidence: torch.Tensor, artifact_id: str
+        self, users: np.ndarray, items: np.ndarray, model: CosineCooccurrence, artifact_id: str
     ) -> None:
         self.users, self.items = pd.Index(item_ids(users)), pd.Index(item_ids(items))
-        if (
-            incidence.shape != (len(users), len(items))
-            or not ((incidence == 0) | (incidence == 1)).all()
-        ):
-            raise ValueError("Require binary positive-user incidence")
-        self.model = CosineCooccurrence(incidence)
+        if model.incidence.shape != (len(users), len(items)):
+            raise ValueError("Cooccurrence vocabulary shape mismatch")
+        self.model = model
         self.artifact_id = artifact_id
 
     def retrieve(self, request: Request, scope: CandidateScope, limit: int) -> RetrievalResult:

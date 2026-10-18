@@ -147,6 +147,19 @@ class Pools:
     offsets: np.ndarray
 
 
+@dataclass(frozen=True)
+class RecallTrainingState:
+    """Training histories in the model's saved ID space; no held-out pools or files."""
+
+    users: np.ndarray
+    items: np.ndarray
+    positive: list[np.ndarray]
+    negative: list[np.ndarray]
+    neutral: list[np.ndarray]
+    seen: list[np.ndarray]
+    supported: np.ndarray
+
+
 class RecallData:
     """Compact identity mappings and positive/negative sets; no test interface."""
 
@@ -166,11 +179,16 @@ class RecallData:
             raise ValueError("Train/validation pair leakage")
         self.users = np.union1d(train.user_id.unique(), val.user_id.unique())
         self.items = np.sort(train.video_id.unique())
-        self.positive = self._histories(train.loc[train.outcome.eq(1)])
-        self.negative = self._histories(train.loc[train.outcome.eq(-1)])
-        self.seen = self._histories(train)
-        self.supported = np.array(
-            [bool(len(p) and len(n)) for p, n in zip(self.positive, self.negative, strict=True)]
+        positive = self._histories(train.loc[train.outcome.eq(1)])
+        negative = self._histories(train.loc[train.outcome.eq(-1)])
+        self.training = RecallTrainingState(
+            self.users,
+            self.items,
+            positive,
+            negative,
+            self._histories(train.loc[train.outcome.eq(0)]),
+            self._histories(train),
+            np.array([bool(len(p) and len(n)) for p, n in zip(positive, negative, strict=True)]),
         )
         eligible = val.video_id.isin(self.items)
         excluded = val.loc[~eligible]
@@ -183,8 +201,8 @@ class RecallData:
             offsets=np.r_[0, np.cumsum(np.bincount(vu, minlength=len(self.users)))],
         )
         train_users = np.isin(self.users, train.user_id.unique())
-        lengths = np.array([len(p) for p in self.positive])
-        neg_lengths = np.array([len(n) for n in self.negative])
+        lengths = np.array([len(p) for p in self.training.positive])
+        neg_lengths = np.array([len(n) for n in self.training.negative])
         self.audit: dict[str, Any] = {
             "users": len(self.users),
             "catalog_items": len(self.items),
@@ -193,7 +211,7 @@ class RecallData:
             "excluded_validation_pairs": len(excluded),
             "excluded_validation_positives": int(excluded.outcome.eq(1).sum()),
             "excluded_validation_users": int(excluded.user_id.nunique()),
-            "mf_supported_users": int(self.supported.sum()),
+            "mf_supported_users": int(self.training.supported.sum()),
             "unseen_training_users": int((~train_users).sum()),
             "train_users_without_positive": int((train_users & (lengths == 0)).sum()),
             "train_users_without_negative": int((train_users & (neg_lengths == 0)).sum()),

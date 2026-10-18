@@ -28,7 +28,7 @@ flowchart LR
   rankers implement `score(request, items)`. Construct the pipeline with different
   instances; no registry or experiment-specific orchestration is required.
 - **Features and identity:** the Deep adapter loads its checkpoint and train-derived
-  lookups once. Dense embedding IDs stay inside adapters. Query IDs are distinct
+  lookups once from a self-contained artifact. Dense embedding IDs stay inside adapters. Query IDs are distinct
   from user IDs, allowing another dataset adapter to represent repeated requests.
 - **Eligibility:** callers supply the permitted catalog subset and seen-item policy.
   The KuaiRec adapter supplies observed held-out IDs, without their labels. This is
@@ -41,11 +41,14 @@ flowchart LR
   diagnostic; a recommendation request needs scores only for its own candidates.
 
 ```python
+from pathlib import Path
+from feed_ranker.recommendation.artifacts import load_ranker, load_retriever
 from feed_ranker.recommendation.contracts import CandidateScope, Request
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
 
-# Construct retriever and ranker once from their training artifacts.
-# PopularityRetriever, CooccurrenceRetriever and MFRetriever share this interface.
+# These directories contain manifest.json + state.pt, with no dataset dependency.
+retriever = load_retriever(Path("artifacts/deep_funnel_seed42/inference/mf"))
+ranker = load_ranker(Path("artifacts/deep_funnel_seed42/inference/ranker")).ranker
 pipeline = RecommendationPipeline(retriever, ranker, budget=50, k=10)
 response = pipeline.recommend(
     Request(query_id="request-001", user_id=raw_user_id),
@@ -62,8 +65,49 @@ Implementation responsibilities:
 - [`recommendation/retrieval.py`](../src/feed_ranker/recommendation/retrieval.py),
   [`ranking.py`](../src/feed_ranker/recommendation/ranking.py): current model adapters.
 - [`data/recommendation.py`](../src/feed_ranker/data/recommendation.py): train-fitted candidate features.
-- [`data/funnel.py`](../src/feed_ranker/data/funnel.py): observed-query and artifact adapters.
+- [`recommendation/artifacts.py`](../src/feed_ranker/recommendation/artifacts.py): validated inference loading and typed artifact metadata.
+- [`training/export.py`](../src/feed_ranker/training/export.py): offline artifact export and legacy checkpoint conversion.
+- [`training/funnel.py`](../src/feed_ranker/training/funnel.py): observed benchmark, label alignment and frozen-reference policy.
 - [`training/funnel_evaluation.py`](../src/feed_ranker/training/funnel_evaluation.py): label-based metrics.
+
+### Training → artifact → inference
+
+```mermaid
+flowchart LR
+    T["Training: inputs + loss + optimizer"] --> A["Export: model spec, resolved features, weights, lookups, support"]
+    A --> I["Load once: ranker / retriever"]
+    I --> P["Request → retrieve → rank → top K"]
+    B["Benchmark labels and frozen selection rules"] --> E["Offline evaluation"]
+    P --> E
+```
+
+**The artifact defines how to predict; the benchmark defines which artifact to compare.**
+`ModelSpec` contains architecture/widths/dropout; existing `FeatureConfig` declares
+ordered inputs, vocabulary sizes and numeric transforms. Training owns optimizer,
+seeds, sampling and checkpoint selection. The model implementation is shared.
+New architecture-study checkpoints save both resolved specifications. Historical
+architecture recipes are interpreted only by the offline converter.
+
+Each inference artifact contains a versioned `manifest.json` and checksummed
+`state.pt`: model weights or fitted retrieval statistics, exact ID mappings,
+required encoded user attributes, training-median item durations and support masks.
+Loaders need neither training nor validation files and preserve the caller's Torch
+RNG. A feature removal changes the saved configuration, not the inference loader.
+Unsupported schemas, inconsistent vocabulary sizes, corrupt state and incompatible
+weights fail explicitly. Unknown categorical IDs retain the existing OOV behavior.
+
+`RecallTrainingState` supplies the sampler with positive/negative/neutral histories;
+it has no evaluation pools or file paths. `ObservedBenchmark` owns query scopes,
+labels and result alignment. The frozen Deep/cap-2/user-XAUC restrictions belong to
+`FrozenDeepReference`, not the generic loader. Export preserves historical MF row
+mappings, including unsupported users; rebuilding a vocabulary could change which
+embedding belongs to a user.
+
+The current feature builder supports the scalar KuaiRec inputs and declared wide
+crosses used here. Sequence/category feature-study inputs require their own matching
+encoder support; this refactor does not promote those experiments or change the
+frozen feature recipe. Training event duration and candidate training-median duration
+remain distinct, explicit source policies.
 
 The CLI below supports `--execution replay` (default, keyed saved retrieval scores
 and cached rank predictions) and `--execution model` (actual retrievers and selected-
@@ -179,7 +223,8 @@ and final NDCG across all five seeds; maximum prediction difference is 4.77e-7.
 All three actual retrievers preserve the saved top-100 ordering for all 7,176 users
 (seed42 for MF). Cooccurrence's query-wise versus batch-wise floating-point scores
 differ by at most 4.89e-4, with unchanged candidate ordering. The refactored tree
-passes 72 synthetic tests and Ruff. These are migration checks, not new quality gains.
+passes 77 synthetic tests and Ruff. Artifact checks cover source-directory removal,
+feature/architecture substitution, exact ID/support preservation and incompatible state. These are migration checks, not new quality gains.
 
 Original frozen-evaluation checks:
 
@@ -208,6 +253,8 @@ python -m feed_ranker.experiments.deep_funnel \
   --output artifacts/deep_funnel_seed42 --threads 1
 ```
 
+With `--execution model`, the output also contains self-contained ranker and retriever
+artifacts under `inference/`; replay exports the ranker artifact only.
 The output includes keyed rank predictions and a provenance manifest, per-user
 metrics, raw-ID candidates, duration diagnostics and a full-pool ranker reference.
 The superseded `recall_rank` and `ranking_target` experiment runners were removed

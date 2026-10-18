@@ -16,7 +16,8 @@ import torch
 from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.data.recall import Pools, RecallData, classify, first_events, prepare
 from feed_ranker.experiments.recall_kuairec import run
-from feed_ranker.models.recall import BPRMF, ObservedSampler, baseline_scores
+from feed_ranker.models.recall import BPRMF
+from feed_ranker.training.recall import ObservedSampler, baseline_scores
 from feed_ranker.training.recall_evaluation import evaluate, ordered_positions
 
 
@@ -44,8 +45,8 @@ class RecallTests(unittest.TestCase):
                 },
             )
             data = RecallData(directory)
-            clear = ObservedSampler(data)
-            mixed = ObservedSampler(data, "negative_and_neutral")
+            clear = ObservedSampler(data.training)
+            mixed = ObservedSampler(data.training, "negative_and_neutral")
             observed = {0: set(), 1: set()}
             for seed in range(50):
                 u, p, n = mixed.sample(np.random.default_rng(seed))
@@ -59,7 +60,7 @@ class RecallTests(unittest.TestCase):
             self.assertEqual(observed, {0: {1, 2}, 1: {1, 3}})
             self.assertNotIn(2, mixed.users)
             with self.assertRaisesRegex(ValueError, "Unknown"):
-                ObservedSampler(data, "unobserved")
+                ObservedSampler(data.training, "unobserved")
 
     def test_mf_resume_matches_uninterrupted_training(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,6 +143,7 @@ class RecallTests(unittest.TestCase):
                 np.array([0, 3, 4]),
             ),
         )
+        data.training = SimpleNamespace(**vars(data))
         report, rows, _ = evaluate(data, np.array([1.0, -np.inf, -np.inf, -np.inf]))
         self.assertEqual(report["users_quality"], 1)
         self.assertEqual(report["metrics"]["recall@50"], 0.5)
@@ -163,6 +165,7 @@ class RecallTests(unittest.TestCase):
                 np.array([0, 0]), np.array([0, 1]), np.array([True, False]), np.array([0, 2])
             ),
         )
+        data.training = SimpleNamespace(**vars(data))
         result, _, _ = evaluate(data, np.array([2.0, 1.0]), np.array([0.0, 1.0]))
         self.assertEqual(result["metrics"]["oracle_ndcg@10_m50"], 1.0)
         self.assertAlmostEqual(result["metrics"]["ndcg@10_m50"], 1 / np.log2(3))
@@ -249,6 +252,7 @@ class RecallTests(unittest.TestCase):
                 np.array([0, 3, 3, 3]),
             ),
         )
+        data.training = SimpleNamespace(**vars(data))
         scores, _ = baseline_scores(data, "cooccurrence")
         np.testing.assert_allclose(scores[:2], np.array([1 / np.sqrt(3)] * 2), rtol=1e-6)
         self.assertTrue(np.isneginf(scores[2]))

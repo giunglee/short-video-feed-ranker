@@ -15,7 +15,8 @@ from torch.nn import functional as F
 
 from feed_ranker.artifacts import collect_run_provenance, save_checkpoint, sha256, write_json
 from feed_ranker.data.recall import RecallData
-from feed_ranker.models.recall import BPRMF, ObservedSampler, baseline_scores
+from feed_ranker.models.recall import BPRMF
+from feed_ranker.training.recall import ObservedSampler, baseline_scores, pool_scores
 from feed_ranker.training.recall_evaluation import evaluate
 
 
@@ -84,7 +85,7 @@ def run(
         model = BPRMF(len(data.users), len(data.items))
         # reasonable defaults, not from any specific production config
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.0001)
-        sampler = ObservedSampler(data, negative_policy)
+        sampler = ObservedSampler(data.training, negative_policy)
         history = []
         first_epoch, best, best_epoch = 0, -1.0, 0
         if resume:
@@ -120,7 +121,7 @@ def run(
                 gradient_total += grad
                 steps += 1
             training_seconds = time.monotonic() - tick
-            scores = model.pool_scores(data)
+            scores = pool_scores(model, data)
             measured, _, _ = evaluate(data, scores)
             value = measured["metrics"]["recall@50"]
             if value is None:
@@ -186,7 +187,7 @@ def run(
             )
         selected = torch.load(output / "best.pt", weights_only=True)
         model.load_state_dict(selected["model"])
-        summary = export(data, model.pool_scores(data), output)
+        summary = export(data, pool_scores(model, data), output)
         summary.update(
             {
                 "selected_epoch": selected["epoch"],

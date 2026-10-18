@@ -55,6 +55,29 @@ class FeatureConfig:
     embedding_configs: list[EmbeddingFeatureConfig] = field(default_factory=list)
     cross_feature_configs: list[CrossFeatureConfig] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> FeatureConfig:
+        """Read the existing FeatureConfig schema, requiring fully resolved vocab sizes."""
+        if set(value) != {"dense_configs", "embedding_configs", "cross_feature_configs"}:
+            raise ValueError("Invalid resolved feature configuration")
+        config = cls(
+            dense_configs=[DenseFeatureConfig(**v) for v in value["dense_configs"]],
+            embedding_configs=[EmbeddingFeatureConfig(**v) for v in value["embedding_configs"]],
+            cross_feature_configs=[CrossFeatureConfig(**v) for v in value["cross_feature_configs"]],
+        )
+        names = [
+            c.name
+            for c in config.dense_configs + config.embedding_configs + config.cross_feature_configs
+        ]
+        if not names or len(set(names)) != len(names) or any(not n for n in names):
+            raise ValueError("Require unique nonempty input names")
+        for embedding in config.embedding_configs:
+            if type(embedding.vocab_size) is not int or embedding.vocab_size < 1:
+                raise ValueError("Require resolved positive vocabulary sizes")
+            if type(embedding.embedding_dim) is not int or embedding.embedding_dim < 1:
+                raise ValueError("Require positive embedding widths")
+        return config
+
     @property
     def dense_cols(self) -> list[str]:
         return [c.name for c in self.dense_configs]

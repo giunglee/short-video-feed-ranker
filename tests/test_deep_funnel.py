@@ -13,16 +13,12 @@ import torch
 
 from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.data.recall import VERSION
-from feed_ranker.data.recommendation import (
-    KuaiRecFeatures,
-    encode_candidates,
-    pair_codes,
-    training_profiles,
-)
+from feed_ranker.data.recommendation import KuaiRecFeatures
 from feed_ranker.experiments.deep_funnel import run
-from feed_ranker.models.ranking import Recipe, build_architecture, feature_config
 from feed_ranker.recommendation.contracts import Request
-from feed_ranker.recommendation.ranking import ModelRanker, predict
+from feed_ranker.recommendation.ranking import ModelRanker
+from feed_ranker.training.funnel import pair_codes
+from feed_ranker.training.ranking import Recipe, build_architecture, feature_config
 
 
 class DeepFunnelTests(unittest.TestCase):
@@ -40,10 +36,14 @@ class DeepFunnelTests(unittest.TestCase):
                 "duration_band": ["0–5s", "5–10s", "10–20s"],
             },
         }
-        self.profiles = training_profiles(
-            pd.DataFrame(
-                {"raw_user_id": [10, 20], "age_range": [1, 2], "follow_user_num_range": [2, 1]}
-            )
+        self.profiles = pd.DataFrame(
+            {"raw_user_id": [10, 20], "age_range": [1, 2], "follow_user_num_range": [2, 1]}
+        ).set_index("raw_user_id")
+        self.features = KuaiRecFeatures(
+            feature_config(self.meta, Recipe("deep", hidden=(4,))),
+            self.meta["vocab"],
+            self.profiles,
+            pd.Series([5000.0, 10000.0, 15000.0, 20000.0], index=[100, 200, 300, 400]),
         )
 
     def test_features_ignore_labels_and_rederive_duration_band(self) -> None:
@@ -57,7 +57,7 @@ class DeepFunnelTests(unittest.TestCase):
                 "duration_band": ["wrong"] * 3,
             }
         )
-        got = encode_candidates(raw, self.meta, self.profiles)
+        got = self.features.encode(raw)
         self.assertEqual(
             set(got),
             {
@@ -72,15 +72,16 @@ class DeepFunnelTests(unittest.TestCase):
         np.testing.assert_array_equal(got["duration_band"], [1, 2, 3])
         np.testing.assert_array_equal(got["age_range"], [1, 2, 0])
         np.testing.assert_array_equal(got["video_id"], [1, 3, 0])
-        other = encode_candidates(raw.assign(watch_ratio=-100), self.meta, self.profiles)
+        other = self.features.encode(raw.assign(watch_ratio=-100))
         for key in got:
             np.testing.assert_array_equal(got[key], other[key])
         with self.assertRaises(ValueError):
-            encode_candidates(raw.assign(video_duration=0), self.meta, self.profiles)
+            self.features.encode(raw.assign(video_duration=0))
 
     def test_actual_ranker_scores_selected_items_with_frozen_features(self) -> None:
         features = KuaiRecFeatures(
-            self.meta,
+            self.features.config,
+            self.meta["vocab"],
             self.profiles,
             pd.Series([5000.0, 10000.0, 15000.0, 20000.0], index=[100, 200, 300, 400]),
         )
@@ -88,7 +89,7 @@ class DeepFunnelTests(unittest.TestCase):
         model = build_architecture(feature_config(self.meta, recipe), recipe, 42)
         ranker = ModelRanker(model, features, "synthetic-checkpoint")
         all_items = np.array([100, 200, 300, 400])
-        full = predict(model, features.build(np.full(4, 10), all_items))
+        full = ranker.predict(features.build(np.full(4, 10), all_items))
         selected = np.array([400, 100])
         result = ranker.score(Request("q", 10), selected)
         np.testing.assert_array_equal(result.items, selected)
@@ -99,7 +100,12 @@ class DeepFunnelTests(unittest.TestCase):
     def test_conflicting_profiles_and_invalid_ids_fail(self) -> None:
         frame = self.profiles.reset_index()
         with self.assertRaises(ValueError):
-            training_profiles(pd.concat([frame, frame.assign(age_range=0)]))
+            KuaiRecFeatures(
+                self.features.config,
+                self.meta["vocab"],
+                pd.concat([frame, frame.assign(age_range=0)]).set_index("raw_user_id"),
+                self.features.durations,
+            )
         pairs = pd.DataFrame({"user_id": [0, 1, 1], "video_id": [1, 0, 1]})
         self.assertEqual(len(np.unique(pair_codes(pairs))), 3)
         with self.assertRaises(ValueError):
@@ -123,7 +129,7 @@ class DeepFunnelTests(unittest.TestCase):
             val = train.assign(video_id=[300, 400, 100, 200])
             for name, raw in [("train", train), ("val", val)]:
                 raw.to_parquet(recall / f"{name}.parquet", index=False)
-                features = encode_candidates(raw, self.meta, self.profiles)
+                features = self.features.encode(raw)
                 encoded = pd.DataFrame(features).assign(
                     raw_user_id=raw.user_id, raw_video_id=raw.video_id, watch_ratio=raw.watch_ratio
                 )
@@ -166,7 +172,9 @@ class DeepFunnelTests(unittest.TestCase):
             val[["user_id", "video_id"]].rename(
                 columns={"user_id": "raw_user_id", "video_id": "raw_video_id"}
             ).assign(
-                prediction=predict(model, encode_candidates(val, self.meta, self.profiles))
+                prediction=ModelRanker(model, self.features, "fixture").predict(
+                    self.features.encode(val)
+                )
             ).to_parquet(trace, index=False)
             runs = []
             for method in ("popularity", "cooccurrence", "mf"):

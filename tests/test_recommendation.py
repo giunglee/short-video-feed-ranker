@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from feed_ranker.models.recall import BPRMF, baseline_scores
+from feed_ranker.models.recall import BPRMF, CosineCooccurrence
 from feed_ranker.recommendation.contracts import (
     CandidateScope,
     Request,
@@ -22,6 +22,7 @@ from feed_ranker.recommendation.retrieval import (
     PopularityRetriever,
 )
 from feed_ranker.training.funnel_evaluation import GainPool
+from feed_ranker.training.recall import baseline_scores
 
 
 class RecordingRanker:
@@ -153,7 +154,8 @@ class RecommendationTests(unittest.TestCase):
                 offsets=np.arange(0, 13, 4),
             ),
         )
-        cooc = CooccurrenceRetriever(users, items, h, "fit")
+        cooc = CooccurrenceRetriever(users, items, CosineCooccurrence(h), "fit")
+        data.training = SimpleNamespace(**vars(data))
         expected, _ = baseline_scores(data, "cooccurrence")
         got = cooc.retrieve(self.request, self.scope, 10).candidates
         index = pd.Index(items).get_indexer(got.items)

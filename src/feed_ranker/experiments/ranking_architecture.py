@@ -17,10 +17,11 @@ import torch
 from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.data.kuairec_dataset import KuaiRecDataset
 from feed_ranker.experiments.diagnostics import export_validation_trace
-from feed_ranker.models.ranking import Recipe, build_architecture, make_dataset
+from feed_ranker.models.ranking import ModelSpec
 from feed_ranker.training.evaluation import RegressionEvaluator
 from feed_ranker.training.losses import TargetMAE
 from feed_ranker.training.optimizer import OptimizerConfig
+from feed_ranker.training.ranking import Recipe, build_architecture, make_dataset
 from feed_ranker.training.trainer import TrainConfig, Trainer
 
 METRICS = ("mae", "xauc", "user_xauc")
@@ -75,6 +76,8 @@ def fit_recipe(
     )
     metadata = {
         "recipe": asdict(recipe),
+        "model_spec": asdict(ModelSpec(recipe.architecture, recipe.hidden)),
+        "feature_config": asdict(dataset.config.feature),
         "target_cap": 2.0,
         "metric_labels": "min(raw_watch_ratio, 2); predictions are not clipped",
         "model_name": recipe.architecture,

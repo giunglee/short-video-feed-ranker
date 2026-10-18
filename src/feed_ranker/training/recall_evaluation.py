@@ -44,10 +44,10 @@ def evaluate(
             "user_id": int(raw_user),
             "pool_size": len(items),
             "positives": count,
-            "train_seen": len(data.seen[u]),
-            "train_positive": len(data.positive[u]),
-            "train_negative": len(data.negative[u]),
-            "mf_supported": bool(data.supported[u]),
+            "train_seen": len(data.training.seen[u]),
+            "train_positive": len(data.training.positive[u]),
+            "train_negative": len(data.training.negative[u]),
+            "mf_supported": bool(data.training.supported[u]),
         }
         for m in (20, 50, 100):
             candidates = order[:m]

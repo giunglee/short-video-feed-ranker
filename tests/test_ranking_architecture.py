@@ -20,13 +20,13 @@ from feed_ranker.experiments.ranking_study import (
     best_run,
     needs_longer_budget,
 )
-from feed_ranker.models.ranking import (
+from feed_ranker.training.evaluation import RegressionEvaluator
+from feed_ranker.training.losses import TargetMAE
+from feed_ranker.training.ranking import (
     Recipe,
     build_architecture,
     feature_config,
 )
-from feed_ranker.training.evaluation import RegressionEvaluator
-from feed_ranker.training.losses import TargetMAE
 
 
 class ArchitectureTest(unittest.TestCase):
