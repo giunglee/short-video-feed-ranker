@@ -10,6 +10,10 @@
    comparison with matched seeds and frozen small-matrix evaluation.
    Deep was strongest among the tested recipes. [Results](ranking_architecture.md).
 
+4. **Retrieval and integration — complete:** popularity, cooccurrence and BPR MF
+   feed the frozen capped Deep ranker. Five matched seeds preserve recall candidates
+   and evaluate full-pool cap-2 NDCG@10. [Results and limitations](recall_rank.md).
+
+Feature exploration and its downstream evaluation are a separate follow-up.
 Historical small-matrix temporal-split conclusions are archived and do not
-establish big-to-small performance. Retrieval and Recall → Rank evaluation remain
-a separate milestone.
+establish big-to-small performance.

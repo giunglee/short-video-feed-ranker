@@ -12,15 +12,21 @@ import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Protocol
 
 import torch
 from torch import nn
 
 from feed_ranker.artifacts import save_checkpoint, write_json
 from feed_ranker.data.schema import RecommendationBatch
-from feed_ranker.training.evaluation import METRICS, RegressionEvaluator, predict_regression
+from feed_ranker.training.evaluation import predict_regression
 from feed_ranker.training.optimizer import OptimizerConfig, build_optimizer
+
+
+class ModelEvaluator(Protocol):
+    """An evaluator owns metric definitions and split-specific prediction inputs."""
+
+    def evaluate(self, model: nn.Module, split: str) -> dict[str, Any]: ...
 
 
 @dataclass
@@ -55,9 +61,11 @@ class TrainConfig:
         if (
             not self.metrics
             or len(set(self.metrics)) != len(self.metrics)
-            or set(self.metrics) - set(METRICS)
+            or any(not isinstance(name, str) or not name.strip() for name in self.metrics)
         ):
-            raise ValueError(f"metrics must be a nonempty unique subset of {METRICS}")
+            raise ValueError(
+                "metrics must contain nonempty unique names; evaluator validates support"
+            )
         if self.selection_metric not in self.metrics:
             raise ValueError("selection_metric must be included in metrics")
         if self.selection_mode not in ("min", "max"):
@@ -85,7 +93,7 @@ class Trainer:
         config: TrainConfig,
         *,
         loss_fn: nn.Module,
-        evaluator: RegressionEvaluator,
+        evaluator: ModelEvaluator,
     ) -> None:
         self.model = model.to(config.device)
         self.train_batches = train_batches

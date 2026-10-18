@@ -1,0 +1,179 @@
+"""Frozen Deep feature boundaries and a complete validation-only funnel fixture."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from dataclasses import asdict
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+
+from feed_ranker.artifacts import sha256, write_json
+from feed_ranker.data.recall import VERSION
+from feed_ranker.experiments.deep_funnel import (
+    encode_candidates,
+    pair_codes,
+    predict,
+    run,
+    training_profiles,
+)
+from feed_ranker.experiments.ranking_architecture import Recipe, build_architecture, feature_config
+
+
+class DeepFunnelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        torch.set_num_threads(1)
+        self.meta = {
+            "protocol": "big-to-small-v1",
+            "spec": {"crosses": {}},
+            "sources": {"big_matrix.csv": "fixture"},
+            "vocab": {
+                "user_id": ["10", "20"],
+                "video_id": ["100", "200", "300", "400"],
+                "age_range": ["a", "b"],
+                "follow_user_num_range": ["a", "b"],
+                "duration_band": ["0–5s", "5–10s", "10–20s"],
+            },
+        }
+        self.profiles = training_profiles(
+            pd.DataFrame(
+                {"raw_user_id": [10, 20], "age_range": [1, 2], "follow_user_num_range": [2, 1]}
+            )
+        )
+
+    def test_features_ignore_labels_and_rederive_duration_band(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "user_id": [10, 20, 99],
+                "video_id": [100, 300, 999],
+                "video_duration": [5000.0, 5001.0, 20000.0],
+                "watch_ratio": [999, 999, 999],
+                "age_range": ["wrong"] * 3,
+                "duration_band": ["wrong"] * 3,
+            }
+        )
+        got = encode_candidates(raw, self.meta, self.profiles)
+        self.assertEqual(
+            set(got),
+            {
+                "user_id",
+                "video_id",
+                "video_duration",
+                "duration_band",
+                "age_range",
+                "follow_user_num_range",
+            },
+        )
+        np.testing.assert_array_equal(got["duration_band"], [1, 2, 3])
+        np.testing.assert_array_equal(got["age_range"], [1, 2, 0])
+        np.testing.assert_array_equal(got["video_id"], [1, 3, 0])
+        other = encode_candidates(raw.assign(watch_ratio=-100), self.meta, self.profiles)
+        for key in got:
+            np.testing.assert_array_equal(got[key], other[key])
+        with self.assertRaises(ValueError):
+            encode_candidates(raw.assign(video_duration=0), self.meta, self.profiles)
+
+    def test_conflicting_profiles_and_invalid_ids_fail(self) -> None:
+        frame = self.profiles.reset_index()
+        with self.assertRaises(ValueError):
+            training_profiles(pd.concat([frame, frame.assign(age_range=0)]))
+        pairs = pd.DataFrame({"user_id": [0, 1, 1], "video_id": [1, 0, 1]})
+        self.assertEqual(len(np.unique(pair_codes(pairs))), 3)
+        with self.assertRaises(ValueError):
+            pair_codes(pairs.assign(user_id=-1))
+
+    def test_complete_frozen_funnel_and_checkpoint_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ranking, recall = root / "ranking", root / "recall"
+            ranking.mkdir()
+            recall.mkdir()
+            train = pd.DataFrame(
+                {
+                    "user_id": [10, 10, 20, 20],
+                    "video_id": [100, 200, 300, 400],
+                    "outcome": [1, -1, 1, -1],
+                    "watch_ratio": [1.0, 0.1, 1.0, 0.1],
+                    "video_duration": [10000.0] * 4,
+                }
+            )
+            val = train.assign(video_id=[300, 400, 100, 200])
+            for name, raw in [("train", train), ("val", val)]:
+                raw.to_parquet(recall / f"{name}.parquet", index=False)
+                features = encode_candidates(raw, self.meta, self.profiles)
+                encoded = pd.DataFrame(features).assign(
+                    raw_user_id=raw.user_id, raw_video_id=raw.video_id, watch_ratio=raw.watch_ratio
+                )
+                encoded.to_parquet(ranking / f"{name}.parquet", index=False)
+            pd.DataFrame({"video_id": [100, 200, 300, 400], "median": [10000.0] * 4}).to_parquet(
+                recall / "item_duration.parquet", index=False
+            )
+            self.meta["splits"] = {
+                name: {"sha256": sha256(ranking / f"{name}.parquet")} for name in ("train", "val")
+            }
+            write_json(ranking / "meta.json", self.meta)
+            write_json(
+                recall / "meta.json",
+                {
+                    "version": VERSION,
+                    "raw_big_sha256": "fixture",
+                    "files": {
+                        name: sha256(recall / name)
+                        for name in ("train.parquet", "val.parquet", "item_duration.parquet")
+                    },
+                },
+            )
+            recipe = Recipe("deep", hidden=(4,))
+            model = build_architecture(feature_config(self.meta, recipe), recipe, 42)
+            checkpoint = root / "best.pt"
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "epoch": 0,
+                    "training": {"seed": 42, "selection_metric": "user_xauc"},
+                    "metadata": {
+                        "recipe": asdict(recipe),
+                        "target_cap": 2,
+                        "data_manifest_sha256": sha256(ranking / "meta.json"),
+                    },
+                },
+                checkpoint,
+            )
+            trace = root / "trace.parquet"
+            val[["user_id", "video_id"]].rename(
+                columns={"user_id": "raw_user_id", "video_id": "raw_video_id"}
+            ).assign(
+                prediction=predict(model, encode_candidates(val, self.meta, self.profiles))
+            ).to_parquet(trace, index=False)
+            runs = []
+            for method in ("popularity", "cooccurrence", "mf"):
+                directory = root / method
+                directory.mkdir()
+                np.save(directory / "scores.npy", [2.0, 1.0, 2.0, 1.0])
+                write_json(
+                    directory / "config.json",
+                    {
+                        "method": method,
+                        "seed": 42,
+                        "data_manifest_sha256": sha256(recall / "meta.json"),
+                    },
+                )
+                runs.append(directory)
+            result = run(recall, ranking, checkpoint, sha256(checkpoint), trace, runs, root / "out")
+            self.assertFalse(result["test_evaluated"])
+            self.assertEqual(result["prediction_parity_max_abs"], 0)
+            self.assertEqual(result["split_pair_membership"], "exact train and validation")
+            packed = np.load(root / "out/mf_m20_candidates.npz")
+            np.testing.assert_array_equal(packed["items"][:, :2], [[300, 400], [100, 200]])
+            self.assertTrue((packed["items"][:, 2:] == -1).all())
+            with self.assertRaisesRegex(ValueError, "frozen finalist"):
+                run(recall, ranking, checkpoint, "wrong", trace, runs, root / "bad")
+            # No test dataset exists: validation-only operation is an enforced fixture property.
+            self.assertFalse((ranking / "test.parquet").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
