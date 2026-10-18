@@ -1,122 +1,131 @@
-# Recall → rank: utility and integration contract
+# Two-stage recommendation: retrieve candidates, then rank the feed
 
-**Approved direction:** clear-negative BPR MF → **capped-target MAE Wide & Deep**.
-**Final objective:** high watch ratio with bounded repeat-watch credit.
-The earlier five-seed results use raw-target ranking; capped ranking currently has
-seed42 evidence only. Reconfirm after the architecture and recall protocols freeze.
+**Retained pipeline:** popularity, cosine item cooccurrence or BPR MF → frozen
+capped Deep `[64, 32]` → top-10 feed. MF produces the strongest final feed among
+these retrieval methods across five matched seeds. **The Deep upgrade itself is
+not a demonstrated funnel improvement over historical capped Wide & Deep.**
 
-```mermaid
-flowchart LR
-    A[Observed held-out pool] --> B[Recall: M50 candidates]
-    B --> C[Fixed ranker within each seed]
-    C --> D[Top10 feed]
-    A --> E[Full-pool ideal top10]
-    D --> F[Linear cap-2 NDCG10]
-    E --> F
+**Observed held-out pool → Retrieve M unique videos → Fixed Deep ranker → Top 10.**
+
+## What is fixed, and why?
+
+| Boundary | Contract | Rationale |
+|---|---|---|
+| Candidates | Same saved retrieval scores and candidate identities; M=50 primary, M=20/100 sensitivity | Isolate the downstream ranker change; no recall retraining |
+| Recall | First-event duration-adjusted binary labels; clear-negative BPR; validation Recall@50 checkpoint | Retrieve sufficiently viewed pairs without treating unknown exposure as a negative |
+| Ranking | Event-weighted MAE on `min(2, watch_ratio)`; frozen architecture-study checkpoints, seeds 42–46 | Preserve the approved utility and independently selected recipe |
+| Rank checkpoint | Maximum capped validation user-XAUC, earliest tie, within 120 epochs | No reselection on funnel NDCG or choosing the best seed |
+| Candidate features | Saved vocabularies; training-only median video duration and derived band; profiles from prepared training records | No held-out watch outcome or event duration enters inference |
+| Final evaluation | First-event **linear cap-2 gain**, full-pool IDCG, equal-user mean, K=10 | Count both retrieval misses and ranker ordering errors |
+
+Deep uses ID, age-range, follow-count-range and duration-band embeddings (width 8),
+log-duration input, hidden widths `[64, 32]`, and no dropout. See the
+[architecture study](ranking_architecture.md). Profile snapshot timing remains
+**unverified**: reconstructing the training inputs does not prove historical
+recommendation-time availability.
+
+For each user, `DCG@10 = sum(min(2, watch_ratio_i) / log2(i+1))`, for positions 1–10.
+IDCG orders all eligible pool items by that gain, including unretrieved items.
+Missing slots contribute zero. All 7,176 users have positive IDCG; binary Recall
+excludes and reports the one user with no positive labels. There is no exponential gain.
+
+## Frozen Deep results
+
+Mean ± sample SD over seeds 42–46; the same ranker serves all methods within a seed.
+Popularity/cooccurrence candidates are deterministic; MF and Deep use matched seeds.
+
+| Retrieval | Recall@50 | Final cap-2 NDCG@10 | Candidate oracle NDCG@10 |
+|---|---:|---:|---:|
+| Popularity | .576896 ± .000000 | .717079 ± .000521 | .969125 ± .000000 |
+| Cooccurrence | .581345 ± .000000 | .710230 ± .000428 | .965433 ± .000000 |
+| **BPR MF** | **.623439 ± .000201** | **.737278 ± .000731** | **.986559 ± .000185** |
+
+![Frozen Deep funnel comparison](figures/funnel_deep_validation.png)
+
+- **MF − popularity:** +.020200 ± .000414 final NDCG; **MF − cooccurrence:**
+  +.027048 ± .000580. Both paired differences are positive in all five seeds.
+- MF final NDCG at M20/50/100: **.735640 / .737278 / .736687**. More candidate
+  coverage does not guarantee a better ranked feed.
+- Cooccurrence's higher binary recall than popularity still does not survive
+  final ranking. Candidate oracle describes hindsight potential, not wholly learnable headroom.
+- MF's advantage over popularity is +.034630 for pools >150 and +.007833 for
+  pools 51–150. The ≤50-positive-history cohort (20 users) regresses −.000706;
+  these are descriptive cohort means, not independent causal effects.
+- The MF feed averages **9.781 of 10 slots at ≤10 seconds**. This pipeline does
+  not resolve duration concentration or establish broader satisfaction.
+
+[Per-seed results](results/funnel_deep_per_seed.csv),
+[aggregate metrics](results/funnel_deep_means.csv), and
+[paired seed differences](results/funnel_deep_paired.csv) contain the numeric evidence.
+
+## Did changing the ranker improve the same candidates?
+
+The historical capped W&D reference exists for seed 42 only. Compare that seed
+with frozen Deep on **identical candidate lists and full-pool denominators**:
+
+| Retrieval, M50 | Historical capped W&D | Frozen Deep | Difference |
+|---|---:|---:|---:|
+| Popularity | .717273 | .717270 | −.000003 |
+| Cooccurrence | .710419 | .710204 | −.000215 |
+| MF | .738430 | .738048 | −.000383 |
+
+**Better standalone user-XAUC did not improve this top-10 funnel in seed 42.**
+This comparison changes architecture, features and checkpoint selector together;
+it cannot attribute the effect to Deep alone. The historical W&D checkpoint used
+full-pool cap-2 NDCG selection; Deep keeps the architecture study's user-XAUC selection.
+Do not compare one historical seed against the new five-seed mean as a matched effect.
+[All budgets](results/funnel_deep_ranker_comparison_seed42.csv).
+
+Keep the user-selected frozen Deep recipe as the integration reference, without
+claiming a funnel lift. Feature additions/removals and their downstream impact
+belong to a **separate experiment and PR**; they do not gate this integration.
+Channel merging and its exploratory results are also outside this PR.
+
+## Historical decisions
+
+Capping bounds repeat-watch utility rather than deleting events or proving noise.
+The earlier raw-to-cap2 seed-42 pilot accepted .740335 → .738430 for consistent
+training/evaluation utility. MAE, user-XAUC and NDCG remain different objectives;
+event-weighted training also differs from first-event, equal-user evaluation.
+
+### Curve sensitivity
+
+Historical **capped W&D**, fixed pools and ranker: adding neutral BPR comparisons
+changed MF/M50 NDCG .738430 → .737139; changing the positive anchor 10s → 8s changed
+it to .738225. Retain clear negatives and the 10s curve; these were exploratory
+pilots, not Deep ablations or universal optima. The 8s arm had 9.36% more training
+pairs at the same epoch budget. See [recall decisions](recall_decisions.md),
+[curve evidence](results/recall_curve_funnel.csv), and [target pilot](results/target_pilot.csv).
+Earlier raw-ranker five-seed evidence remains [historical](results/funnel_validation.csv).
+
+## Verification and reproduction
+
+- 64 isolated-tree tests and Ruff pass, including a synthetic Deep funnel with no
+  test dataset, profile/OOV handling, duration boundaries, label-independent inputs
+  and wrong-checkpoint rejection.
+- All five checkpoints reproduce **8,192 saved validation predictions exactly**.
+  Train/validation pair membership matches recall exactly despite different feature manifests.
+- All 45 method/seed/budget candidate exports match the original recall lists;
+  standalone Recall is unchanged. Seed-42 candidate-oracle values match the old
+  capped funnel. Source snapshots, checkpoint/input hashes and per-user traces are saved.
+- Validation only; no new test access or training. Dense observed pools, repeated
+  validation use, historical test exposure and snapshot timing limit generalization.
+  Seed SD measures training variation, not data uncertainty or online lift.
+
+For each frozen Deep checkpoint, pair the matching MF seed with the shared baselines:
+
+```sh
+python -m feed_ranker.experiments.deep_funnel \
+  --data PATH/TO/recall_data \
+  --ranking-data PATH/TO/prepared_architecture_data \
+  --checkpoint PATH/TO/frozen_deep/best.pt \
+  --checkpoint-sha256 SHA256_FROM_FROZEN_FINALISTS \
+  --reference-trace PATH/TO/saved_validation_trace.parquet \
+  --runs PATH/TO/popularity PATH/TO/cooccurrence PATH/TO/matching_mf \
+  --output artifacts/deep_funnel_seed42 --threads 1
 ```
 
-## Three distinct contracts
-
-| Stage | Training target / loss | Checkpoint or evaluation |
-|---|---|---|
-| Recall | Duration-adjusted binary pairs; BPR against clear observed negatives | Select highest macro binary Recall50 within15 epochs |
-| Rank | Event target `min(2, r)`; MAE, event weighting | Select highest full-pool cap-2 NDCG10 within120 epochs |
-| Final feed | First-event gain `g = min(2, r)` | Macro cap-2 NDCG10 at M50; M20/100 sensitivities |
-
-All ties retain the earliest checkpoint. Ranker: IDs + log duration, hidden128/32,
-AdamW lr=.001, weight decay0, batch1024, no dropout. One selected checkpoint is
-shared by all retrieval methods and budgets within a seed. Predictions are not clipped.
-
-For user `u`, `DCG@10 = sum(gain_i / log2(i+1))` for ranks1–10.
-Divide by the DCG of the highest-gain ten items in the **full eligible pool**,
-including unretrieved items; average users equally. No exponential gain. Missing slots
-have zero gain; zero-IDCG users are excluded and counted. Here all7,176 have positive IDCG.
-
-## Why align the labels now?
-
-**Decision:** use the same cap2 utility definition in ranking targets and final-feed
-gains. We accept the seed42 MF/M50 decrease .740335→.738430 (−.001905) for the
-clearer modeling contract. This is a deliberate objective choice, not a performance
-win or evidence that all ratios above2 are noise. Capping bounds label values;
-it does not delete those events. Keep raw ratios for audits.
-
-Raw training was previously retained because it scored higher in the matched pilot.
-That evidence remains valid, but performance alone does not determine the utility
-definition. MAE and NDCG still differ: MAE estimates a conditional median and does
-not directly optimize top-K utility. Event-weighted training and first-event,
-equal-user evaluation also remain distinct.
-
-Different training losses can be evaluated with the same NDCG
-([TensorFlow ranking example](https://www.tensorflow.org/recommenders/examples/listwise_ranking)).
-That does not make different training/evaluation labels a required best practice.
-
-## Evidence to review
-
-![Final-feed results and target pilot](figures/funnel_validation.png)
-
-**Historical evidence:** the five-seed panel above uses raw-trained rankers;
-it does not confirm the newly adopted capped-target recipe.
-
-The PR description is the concise experiment note. Supporting data:
-[five-seed funnel metrics](results/funnel_validation.csv),
-[fixed-checkpoint target pilot](results/target_pilot.csv).
-
-- Seeds42–46, with42 reused from exploration;43–46 rerun under frozen selection,
-  but with prior project ranking history. Same split, comparable budgets and shared
-  ranker within each paired retrieval comparison. Report sample SD, not standard error.
-- Across seeds both MF and ranker change; their individual variance contributions
-  are not identified. Repeated validation use remains a limitation.
-- A higher binary Recall need not produce higher capped feed utility. Candidate
-  oracle is a hindsight diagnostic; its gap is not entirely learnable.
-- Duration concentration and observed-pool selection remain; this is not a temporal,
-  causal, cold-start or online-lift result. No new test evaluation.
-
-## Curve sensitivity
-
-![Positive curve sensitivity with a fixed capped ranker](figures/recall_curve_sensitivity.png)
-
-Only positive **training** labels changed10s→8s; original negative membership,
-validation relevance, pools and capped seed42 ranker (epoch111) stayed fixed.
-Popularity/cooccurrence were rebuilt; MF received15epochs in both arms.
-[All budgets and oracle metrics](results/recall_curve_funnel.csv).
-
-| Method | Cap2 NDCG10,10s | Cap2 NDCG10,8s | Difference at M50 |
-|---|---:|---:|---:|
-| Popularity | .717273 | .715130 | −.002143 |
-| Cooccurrence | .710419 | .707654 | −.002765 |
-| MF | .738430 | .738225 | −.000205 |
-
-MF candidate-oracle NDCG also fell .986564→.986144; M20 improved by .000310,
-but predeclared headlineM50 did not. No performance-based reason to replace10s.
-MF's final feed still averages9.74 of10 videos at≤10s: this change does not resolve
-duration concentration. Equal epochs mean9.36% more training pairs in the8s arm.
-One exploratory seed cannot establish a reliable loss or prove10s is optimal.
-
-## Integration checks and code
-
-- Re-map raw IDs with the saved ranker vocabulary. Use training-only per-video
-  median duration, never the held-out event's duration or outcomes as features.
-- Verify data/source/checkpoint hashes, frozen ranker prediction parity, candidate
-  identity, support masking, full-pool denominators and deterministic ties.
-- The older `recall_rank` adapter reports **binary** metrics. Use `GainPool` and
-  the `ranking_target` evaluator for the primary **graded cap-2** metric; do not
-  interpret the older binary summary as capped-watch utility.
-- `ranking_target` reproduces the controlled raw/capped pilot given prepared
-  ranking/recall artifacts and the historical reference directory. It preserves
-  complete epoch curves and rejects accidental overwrite. Its CLI defaults describe
-  the recorded local experiment; data and model checkpoints are not bundled.
-
-Read: `experiments/recall_rank.py` (feature adapter) →
-`training/funnel_evaluation.py` (gain/denominators) →
-`experiments/ranking_target.py` (selector and controlled training) → the synthetic tests.
-
-## Review and merge order
-
-Review milestones: ranking foundation → ranking EDA → ranking training →
-**4. Wide & Deep architecture exploration** → **5. Recall** → **6. Integration**.
-Drafts can be reviewed while their bases are open; merge foundations first, then
-retarget/check each dependent PR after architecture work. Existing GitHub PR#4/#5
-are recall/integration; review milestone numbers do not rename those PRs.
-Next: channel merging, then YouTube DNN; ANN optional if scale warrants it.
-DNN does not itself require a next-watch objective; that needs a valid temporal
-protocol. Brief-watch encoders and snapshots remain separate feature ablations.
+The output includes keyed rank predictions and a provenance manifest, per-user
+metrics, raw-ID candidates, duration diagnostics and a full-pool ranker reference.
+The legacy `recall_rank` scorer remains restricted to its historical IDs/duration
+models; do not pass profile-based Deep weights through that adapter.

@@ -31,6 +31,11 @@ pairs, and which weighting, feature, and architecture choices improve it?
    and reproduction](docs/ranking_architecture.md). Four model families, 37 training
    runs, and 20 frozen finalists; capped validation user-XAUC selects checkpoints.
 
+4. **Retrieval and final-feed integration — complete:** [recall methods](docs/recall_decisions.md)
+   and [frozen Deep funnel evaluation](docs/recall_rank.md). MF leads the retrieval
+   baselines across five matched seeds; standalone ranking gains do not guarantee
+   higher final-feed NDCG. Feature exploration is a separate follow-up.
+
 **Limits:** the split tests pair generalization, not future-time prediction.
 Snapshot feature timing is unverified. Historical test-label inspection is
 explicitly disclosed. This repository studies offline modeling, not online serving.
@@ -52,9 +57,8 @@ explicitly disclosed. This repository studies offline modeling, not online servi
 
 ## Future directions
 
-- **Retrieval:** popularity, cosine item cooccurrence and BPR matrix factorization;
-  [protocol and evidence](docs/recall_decisions.md). The integration step measures
-  final-feed utility with the frozen Deep ranker.
+- **Next:** controlled feature exploration with standalone and recall-to-rank metrics;
+  channel-merging experiments remain separate from the frozen baseline.
 - **Later:** multi-task ranking, DIN/SASRec-style behavior modeling, graph-based
   recommendation, and incremental-value modeling.
 - These are research directions, not implemented capabilities. Each becomes an
