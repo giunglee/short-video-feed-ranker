@@ -6,6 +6,7 @@ Only ranking metrics retain all predictions; MAE/MSE accumulate by batch.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable, Mapping
 
 import torch
@@ -26,6 +27,7 @@ class RegressionEvaluator:
         metric_seed: int,
         xauc_pairs: int,
         user_pairs: int,
+        label_cap: float | None = None,
     ) -> None:
         if not metrics or len(set(metrics)) != len(metrics) or set(metrics) - set(METRICS):
             raise ValueError(f"metrics must be a nonempty unique subset of {METRICS}")
@@ -35,6 +37,9 @@ class RegressionEvaluator:
         self.metric_seed = metric_seed
         self.xauc_pairs = xauc_pairs
         self.user_pairs = user_pairs
+        if label_cap is not None and (not math.isfinite(label_cap) or label_cap <= 0):
+            raise ValueError("label_cap must be finite and positive")
+        self.label_cap = label_cap
 
     @torch.no_grad()
     def evaluate(self, model: nn.Module, split: str) -> dict[str, Any]:
@@ -48,6 +53,8 @@ class RegressionEvaluator:
 
         for batch in self.loaders[split]:
             labels = batch["label"]
+            if self.label_cap is not None:
+                labels = labels.clamp(max=self.label_cap)
             predicted = predict_regression(model, batch["feature"], len(labels), self.device).cpu()
             residual = predicted.double() - labels.double()
             if "mae" in error_sums:

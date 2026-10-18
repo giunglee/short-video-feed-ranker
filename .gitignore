@@ -1,0 +1,28 @@
+# Local environments and Python caches
+.venv/
+.venv-*/
+.python/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+
+# Data, generated experiments, and checkpoints
+data/raw/
+data/extract/
+artifacts/
+checkpoints/
+runs/
+*.pt
+*.pth
+
+# Local notes and editor settings
+AGENTS.md
+docs/private/
+docs/notes/
+.DS_Store
+.vscode/
+.idea/

@@ -19,6 +19,7 @@ import torch.nn as nn
 
 from feed_ranker.data.config import FeatureConfig
 from feed_ranker.models.components.feature_encoder import (
+    CategoricalMainEffects,
     CrossFeatureEncoder,
     DenseFeatureEncoder,
     EmbeddingEncoder,
@@ -60,6 +61,8 @@ class WideNN(nn.Module):
         input_dim: int,
         output_dim: int,
         config: FeatureConfig,
+        *,
+        categorical_main_effects: bool = False,
     ) -> None:
         super().__init__()
         if not config.dense_configs:
@@ -68,6 +71,11 @@ class WideNN(nn.Module):
         self.dense_encoder = DenseFeatureEncoder(config.dense_configs)
         self.cross_encoder = CrossFeatureEncoder(config.cross_feature_configs)
         self.linear = nn.Linear(input_dim, output_dim)
+        self.main_effects = (
+            CategoricalMainEffects(config.embedding_configs) if categorical_main_effects else None
+        )
+        if categorical_main_effects and output_dim != 1:
+            raise ValueError("Categorical main effects require scalar regression")
 
     def forward(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         dense = self.dense_encoder({n: features[n] for n in self.config.dense_cols})
@@ -77,7 +85,10 @@ class WideNN(nn.Module):
             )
         else:
             crosses = dense.new_empty((dense.shape[0], 0))
-        return self.linear(torch.cat([dense, crosses], dim=-1))
+        prediction = self.linear(torch.cat([dense, crosses], dim=-1))
+        if self.main_effects is not None:
+            prediction = prediction + self.main_effects(features)
+        return prediction
 
 
 class DeepNN(nn.Module):
@@ -117,6 +128,8 @@ class WideDeepNN(nn.Module):
         config: FeatureConfig,
         nn_dims: list[int] | None = None,
         dropout_ratio: float = 0.5,
+        *,
+        categorical_main_effects: bool = False,
     ) -> None:
         super().__init__()
         if not config.embedding_configs or not config.dense_configs:
@@ -131,6 +144,9 @@ class WideDeepNN(nn.Module):
         if nn_dims[-1] != 1:
             raise ValueError(f"deep nn_dims must end with 1 logit, got {nn_dims}")
         self.deep_mlp = MLP(nn_dims, dropout_ratio)
+        self.main_effects = (
+            CategoricalMainEffects(config.embedding_configs) if categorical_main_effects else None
+        )
 
     def forward(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         dense = self.dense_encoder({n: features[n] for n in self.config.dense_cols})
@@ -143,4 +159,6 @@ class WideDeepNN(nn.Module):
         emb = self.embedding_encoder({n: features[n] for n in self.config.embedding_cols})
         wide_logit = self.wide_linear(torch.cat([dense, crosses], dim=-1))
         deep_logit = self.deep_mlp(torch.cat([dense, emb], dim=-1))
+        if self.main_effects is not None:
+            wide_logit = wide_logit + self.main_effects(features)
         return wide_logit + deep_logit

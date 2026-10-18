@@ -44,18 +44,24 @@ def export_validation_trace(
     device: str = "cpu",
     metric_seed: int = 0,
     user_profiles: Path | None = None,
+    split: str = "val",
+    label_cap: float | None = None,
 ) -> dict[str, Any]:
     """Export scores/labels, raw entity IDs and explicitly allowed prepared features.
 
     Optional public profiles add only user_active_degree, for diagnosis rather than
     model input. Caller must restore the supplied checkpoint into model first.
     """
+    if split not in ("val", "test"):
+        raise ValueError("Trace split must be val or test")
+    if label_cap is not None and (not np.isfinite(label_cap) or label_cap <= 0):
+        raise ValueError("label_cap must be finite and positive")
     if set(feature_allowlist) - set(dataset.config.feature_cols):
         raise ValueError("Trace allowlist contains non-model features")
     output.mkdir(parents=True, exist_ok=False)
     model.eval()
     chunks = []
-    for batch in dataset.loader("val", 8192):
+    for batch in dataset.loader(split, 8192):
         size = len(batch["label"])
         frame = pd.DataFrame(
             {
@@ -74,7 +80,8 @@ def export_validation_trace(
             )
         chunks.append(frame)
     trace = pd.concat(chunks, ignore_index=True)
-    trace.index.name = "validation_row"
+    trace_name = "validation" if split == "val" else "test"
+    trace.index.name = f"{trace_name}_row"
     train = pd.read_parquet(
         dataset.directory / "train.parquet", columns=["raw_user_id", "raw_video_id"]
     )
@@ -104,7 +111,27 @@ def export_validation_trace(
             profiles.set_index("user_id").user_active_degree
         ).fillna("<missing>")
         cohorts.append("snapshot_activity")
-    trace.to_parquet(output / "validation_trace.parquet", index=True)
+    trace["evaluation_label"] = (
+        trace.label if label_cap is None else trace.label.clip(upper=label_cap)
+    )
+    trace.to_parquet(output / f"{trace_name}_trace.parquet", index=True)
+    if label_cap is not None:
+        write_json(
+            output / "prediction_summary.json",
+            {
+                "raw_label_quantiles": {
+                    str(q): float(v)
+                    for q, v in trace.label.quantile([0, 0.5, 0.9, 0.99, 1]).items()
+                },
+                "prediction_quantiles": {
+                    str(q): float(v)
+                    for q, v in trace.prediction.quantile([0, 0.5, 0.9, 0.99, 1]).items()
+                },
+                "fraction_prediction_below_zero": float(trace.prediction.lt(0).mean()),
+                "fraction_prediction_above_cap": float(trace.prediction.gt(label_cap).mean()),
+                "fraction_labels_at_cap": float(trace.label.ge(label_cap).mean()),
+            },
+        )
     results = []
     for dimension in ["overall", *cohorts]:
         groups = (
@@ -114,7 +141,7 @@ def export_validation_trace(
         )
         for name, frame in groups:
             pred = torch.tensor(frame.prediction.to_numpy())
-            label = torch.tensor(frame.label.to_numpy())
+            label = torch.tensor(frame.evaluation_label.to_numpy())
             users = torch.tensor(frame.raw_user_id.to_numpy())
             results.append(
                 {
@@ -132,7 +159,8 @@ def export_validation_trace(
     manifest = {
         "checkpoint_sha256": sha256(checkpoint),
         "data_manifest_sha256": sha256(dataset.directory / "meta.json"),
-        "split": "val",
+        "split": split,
+        "label_cap": label_cap,
         "feature_allowlist": feature_allowlist,
         "feature_encoding": "prepared IDs/lists; vocabulary in data manifest; duration milliseconds before model log1p",
         "activity_thresholds": thresholds,
@@ -145,6 +173,7 @@ def export_validation_trace(
             "Snapshot activity is not point-in-time verified",
             "Trace is local, not a serving log",
             "Cohort XAUC compares rows within each cohort; user_XAUC macro-averages eligible users",
+            "Capped tail-only cohorts may have no unequal labels: XAUC is then undefined, not zero",
         ],
     }
     write_json(output / "manifest.json", manifest)
