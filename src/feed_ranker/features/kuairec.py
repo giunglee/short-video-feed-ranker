@@ -8,15 +8,17 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
-from feed_ranker.data.config import FeatureConfig, FeatureSpec
-from feed_ranker.data.kuairec_preprocessor import duration_band
+from feed_ranker.features.config import FeatureConfig, FeatureSpec
 
 
-class KuaiRecFeatures:
+class KuaiRecFeatureBuilder:
     """Own fitted vocabularies, encoded user attributes, and train-median durations.
 
     No dataset paths or labels are needed. Unknown IDs/profile values use code 0;
@@ -141,3 +143,38 @@ class KuaiRecFeatures:
 
     def build(self, users: np.ndarray, items: np.ndarray) -> dict[str, np.ndarray]:
         return self.encode(self.raw(users, items))
+
+
+def fit_candidate_features(
+    config: FeatureConfig, metadata: dict[str, Any], training_path: Path, duration_path: Path
+) -> KuaiRecFeatureBuilder:
+    """Extract only declared user attributes from training and frozen item durations."""
+    crosses = {n: metadata["spec"]["crosses"][n] for n in config.cross_feature_cols}
+    profile_names = sorted(
+        (set(config.embedding_cols) | {n for c in crosses.values() for n in c})
+        - {"user_id", "video_id", "duration_band"}
+    )
+    columns = ["raw_user_id", *profile_names]
+    parts = [
+        b.to_pandas().drop_duplicates()
+        for b in pq.ParquetFile(training_path).iter_batches(batch_size=131072, columns=columns)
+    ]
+    profiles = pd.concat(parts, ignore_index=True).drop_duplicates()
+    if profiles.raw_user_id.duplicated().any() or profiles.isna().any().any():
+        raise ValueError("Conflicting or missing training profile codes")
+    profiles = profiles.set_index("raw_user_id")
+    durations = pd.read_parquet(duration_path).set_index("video_id")["median"]
+    names = set(config.embedding_cols) | set(profile_names)
+    return KuaiRecFeatureBuilder(
+        config, {n: metadata["vocab"][n] for n in names}, profiles, durations, crosses
+    )
+
+
+def duration_band(values: pd.Series) -> pd.Series:
+    """Fixed duration bins in milliseconds; boundaries match the descriptive EDA."""
+    return pd.cut(
+        values,
+        [0, 5000, 10000, 20000, 40000, 60000, np.inf],
+        labels=["0–5s", "5–10s", "10–20s", "20–40s", "40–60s", ">60s"],
+        include_lowest=True,
+    ).astype("string")

@@ -9,7 +9,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from feed_ranker.training.funnel_evaluation import GainPool, TargetMAE
+from feed_ranker.evaluation.funnel import GainPool
+from feed_ranker.training.losses import TargetMAE
 from feed_ranker.training.trainer import TrainConfig, Trainer
 
 

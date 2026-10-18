@@ -13,7 +13,7 @@ import torch
 from torch import nn
 
 from feed_ranker.data.schema import RecommendationBatch
-from feed_ranker.training.metrics import user_xauc, xauc
+from feed_ranker.evaluation.metrics import user_xauc, xauc
 
 METRICS = ("mae", "mse", "xauc", "user_xauc")
 

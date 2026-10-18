@@ -11,17 +11,17 @@ import pandas as pd
 import torch
 
 from feed_ranker.artifacts import sha256
-from feed_ranker.data.config import FeatureConfig
-from feed_ranker.data.recommendation import KuaiRecFeatures
-from feed_ranker.models.ranking import ModelSpec, build_model
-from feed_ranker.models.recall import BPRMF, CosineCooccurrence
-from feed_ranker.recommendation.contracts import Retriever
-from feed_ranker.recommendation.ranking import ModelRanker
-from feed_ranker.recommendation.retrieval import (
+from feed_ranker.features.config import FeatureConfig
+from feed_ranker.features.kuairec import KuaiRecFeatureBuilder
+from feed_ranker.inference.rankers import ModelRanker
+from feed_ranker.inference.retrievers import (
     CooccurrenceRetriever,
     MFRetriever,
     PopularityRetriever,
 )
+from feed_ranker.models.ranking_factory import ModelSpec, build_model
+from feed_ranker.models.recall import BPRMF, CosineCooccurrence
+from feed_ranker.recommendation.contracts import Retriever
 
 VERSION = "recommendation-artifact-v1"
 
@@ -64,7 +64,7 @@ class ArtifactManifest:
 class LoadedRanker:
     ranker: ModelRanker
     spec: ModelSpec
-    features: KuaiRecFeatures
+    features: KuaiRecFeatureBuilder
     manifest: ArtifactManifest
 
 
@@ -96,7 +96,7 @@ def load_ranker(directory: Path) -> LoadedRanker:
         raise ValueError("Expected a ranking artifact")
     state = _state(directory)
     spec = ModelSpec(**state["model_spec"])
-    features = KuaiRecFeatures(
+    features = KuaiRecFeatureBuilder(
         FeatureConfig.from_dict(state["feature_config"]),
         state["vocab"],
         pd.DataFrame(

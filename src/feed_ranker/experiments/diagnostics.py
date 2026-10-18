@@ -16,8 +16,8 @@ from torch import nn
 
 from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.data.kuairec_dataset import KuaiRecDataset
-from feed_ranker.training.evaluation import predict_regression
-from feed_ranker.training.metrics import user_xauc, xauc
+from feed_ranker.evaluation.metrics import user_xauc, xauc
+from feed_ranker.evaluation.ranking import predict_regression
 
 
 def activity_groups(counts: pd.Series, thresholds: tuple[float, float]) -> pd.Series:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from feed_ranker.data.config import FeatureConfig
+from feed_ranker.features.config import FeatureConfig
 from feed_ranker.models.components.feature_encoder import EmbeddingEncoder
 from feed_ranker.models.wide_deep import DeepNN, WideDeepNN, WideNN
 

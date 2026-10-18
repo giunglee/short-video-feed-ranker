@@ -15,6 +15,7 @@ import pandas as pd
 import torch
 
 from feed_ranker.data.kuairec_preprocessor import KuaiRecPreprocessor, split_pairs
+from feed_ranker.evaluation.metrics import user_xauc, xauc
 from feed_ranker.experiments.multi_seed import summarize
 from feed_ranker.experiments.wide_deep_kuairec import (
     build_model,
@@ -24,13 +25,12 @@ from feed_ranker.experiments.wide_deep_kuairec import (
 )
 from feed_ranker.models.constant import ConstantRegressor
 from feed_ranker.training import OptimizerConfig, TrainConfig
-from feed_ranker.training.metrics import user_xauc, xauc
 from feed_ranker.training.optimizer import build_optimizer
 
 
 class PipelineTest(unittest.TestCase):
     def test_duration_bands_and_wide_indicators(self) -> None:
-        from feed_ranker.data.kuairec_preprocessor import duration_band
+        from feed_ranker.features.kuairec import duration_band
 
         values = pd.Series([0, 5000, 5001, 10000, 10001, 20001, 40001, 60001, -1, np.nan])
         bands = duration_band(values)

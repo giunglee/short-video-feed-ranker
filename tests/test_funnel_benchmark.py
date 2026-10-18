@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import tempfile
 import unittest
 from dataclasses import asdict
@@ -11,14 +13,21 @@ import numpy as np
 import pandas as pd
 import torch
 
-from feed_ranker.artifacts import sha256, write_json
-from feed_ranker.data.recall import VERSION
-from feed_ranker.data.recommendation import KuaiRecFeatures
-from feed_ranker.experiments.deep_funnel import run
+from feed_ranker.artifacts import collect_run_provenance, sha256, write_json
+from feed_ranker.data.recall import VERSION, RecallData
+from feed_ranker.evaluation.kuairec import pair_codes
+from feed_ranker.experiments.convert_inference import (
+    FrozenDeepReference,
+    convert_checkpoint,
+    convert_retriever,
+)
+from feed_ranker.experiments.evaluate_funnel import run
+from feed_ranker.experiments.ranking_recipe import Recipe, build_architecture, feature_config
+from feed_ranker.features.kuairec import KuaiRecFeatureBuilder
+from feed_ranker.inference.artifacts import load_ranker
+from feed_ranker.inference.rankers import ModelRanker
+from feed_ranker.models.recall import BPRMF
 from feed_ranker.recommendation.contracts import Request
-from feed_ranker.recommendation.ranking import ModelRanker
-from feed_ranker.training.funnel import pair_codes
-from feed_ranker.training.ranking import Recipe, build_architecture, feature_config
 
 
 class DeepFunnelTests(unittest.TestCase):
@@ -39,12 +48,26 @@ class DeepFunnelTests(unittest.TestCase):
         self.profiles = pd.DataFrame(
             {"raw_user_id": [10, 20], "age_range": [1, 2], "follow_user_num_range": [2, 1]}
         ).set_index("raw_user_id")
-        self.features = KuaiRecFeatures(
+        self.features = KuaiRecFeatureBuilder(
             feature_config(self.meta, Recipe("deep", hidden=(4,))),
             self.meta["vocab"],
             self.profiles,
             pd.Series([5000.0, 10000.0, 15000.0, 20000.0], index=[100, 200, 300, 400]),
         )
+
+    def test_provenance_identifies_source_checkout_from_another_working_directory(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        expected = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip()
+        previous = Path.cwd()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.chdir(tmp)
+                provenance = collect_run_provenance()
+                self.assertEqual(provenance["commit"], expected)
+        finally:
+            os.chdir(previous)
 
     def test_features_ignore_labels_and_rederive_duration_band(self) -> None:
         raw = pd.DataFrame(
@@ -79,7 +102,7 @@ class DeepFunnelTests(unittest.TestCase):
             self.features.encode(raw.assign(video_duration=0))
 
     def test_actual_ranker_scores_selected_items_with_frozen_features(self) -> None:
-        features = KuaiRecFeatures(
+        features = KuaiRecFeatureBuilder(
             self.features.config,
             self.meta["vocab"],
             self.profiles,
@@ -100,7 +123,7 @@ class DeepFunnelTests(unittest.TestCase):
     def test_conflicting_profiles_and_invalid_ids_fail(self) -> None:
         frame = self.profiles.reset_index()
         with self.assertRaises(ValueError):
-            KuaiRecFeatures(
+            KuaiRecFeatureBuilder(
                 self.features.config,
                 self.meta["vocab"],
                 pd.concat([frame, frame.assign(age_range=0)]).set_index("raw_user_id"),
@@ -190,15 +213,48 @@ class DeepFunnelTests(unittest.TestCase):
                     },
                 )
                 runs.append(directory)
-            result = run(recall, ranking, checkpoint, sha256(checkpoint), trace, runs, root / "out")
+            mf = BPRMF(2, 4, 2)
+            with torch.no_grad():
+                mf.user.weight.fill_(1)
+                mf.item.weight.copy_(torch.tensor([[1.0, 1.0], [0.5, 0.5], [1.0, 1.0], [0.5, 0.5]]))
+                mf.item_updated.fill_(True)
+            import json
+
+            torch.save(
+                {
+                    "config": {**json.loads((runs[2] / "config.json").read_text()), "dimension": 2},
+                    "model": mf.state_dict(),
+                    "epoch": 0,
+                },
+                runs[2] / "best.pt",
+            )
+            config = torch.load(runs[2] / "best.pt", weights_only=True)["config"]
+            write_json(runs[2] / "config.json", config)
+            artifact = root / "inference/ranker"
+            convert_checkpoint(checkpoint, ranking, recall / "item_duration.parquet", artifact)
+            reference = FrozenDeepReference.read(checkpoint, sha256(checkpoint))
+            parity = reference.verify_predictions(load_ranker(artifact), ranking, trace)
+            self.assertEqual(parity["prediction_parity_max_abs"], 0)
+            retrievers = []
+            for directory in runs:
+                target = root / "inference" / directory.name
+                convert_retriever(RecallData(recall), directory, target)
+                retrievers.append(target)
+            # Neither evaluation mode opens old runs/checkpoints/reference traces.
+            checkpoint.unlink()
+            trace.unlink()
+            for directory in runs:
+                directory.rename(directory.with_name(directory.name + "-unavailable"))
+            result = run(recall, ranking, artifact, retrievers, root / "out")
+            actual = run(recall, ranking, artifact, retrievers, root / "model", execution="model")
+            self.assertEqual(result["methods"], actual["methods"])
             self.assertFalse(result["test_evaluated"])
-            self.assertEqual(result["prediction_parity_max_abs"], 0)
             self.assertEqual(result["split_pair_membership"], "exact train and validation")
             packed = np.load(root / "out/mf_m20_candidates.npz")
             np.testing.assert_array_equal(packed["items"][:, :2], [[300, 400], [100, 200]])
             self.assertTrue((packed["items"][:, 2:] == -1).all())
             with self.assertRaisesRegex(ValueError, "frozen finalist"):
-                run(recall, ranking, checkpoint, "wrong", trace, runs, root / "bad")
+                FrozenDeepReference.read(artifact / "state.pt", "wrong")
             # No test dataset exists: validation-only operation is an enforced fixture property.
             self.assertFalse((ranking / "test.parquet").exists())
 

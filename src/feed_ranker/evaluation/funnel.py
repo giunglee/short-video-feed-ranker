@@ -12,8 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from feed_ranker.recommendation.contracts import Recommendation, Request
 from feed_ranker.recommendation.ordering import ordered_positions, tie_keys
-from feed_ranker.training.losses import TargetMAE as TargetMAE
 
 
 @dataclass
@@ -186,3 +186,50 @@ class GainPool:
                     }
                 )
         return pd.DataFrame(rows)
+
+
+@dataclass(frozen=True)
+class FunnelReport:
+    """Metrics and diagnostics for executed responses; labels never enter the pipeline."""
+
+    metrics: dict[str, float | int | None]
+    per_user: pd.DataFrame
+    duration: pd.DataFrame
+
+
+class FunnelEvaluator:
+    """Align response IDs to the full observed pool, then measure the actual ordering."""
+
+    def __init__(self, pool: GainPool) -> None:
+        self.pool = pool
+
+    def evaluate(self, results: list[Recommendation]) -> FunnelReport:
+        pool = self.pool
+        if len(results) != len(pool.users):
+            raise ValueError("Missing/extra recommendation queries")
+        candidates, finals = [], []
+        for u, (user, result) in enumerate(zip(pool.users, results, strict=True)):
+            if result.request != Request(str(int(user)), int(user)):
+                raise ValueError("Recommendation query order/identity differs")
+            lo, hi = pool.offsets[u : u + 2]
+            if result.pool_size != hi - lo:
+                raise ValueError("Recommendation scope size differs from observed pool")
+            if not np.array_equal(result.retrieved.items, result.ranked.items):
+                raise ValueError("Ranked item identities differ from retrieved items")
+            positions = pd.Index(pool.items[lo:hi]).get_indexer(result.retrieved.items)
+            if (positions < 0).any():
+                raise ValueError("Recommendation outside observed evaluation scope")
+            final = result.final_positions
+            if (
+                final.ndim != 1
+                or final.dtype.kind not in "iu"
+                or (final < 0).any()
+                or (final >= len(positions)).any()
+            ):
+                raise ValueError("Invalid final positions")
+            candidates.append(lo + positions)
+            finals.append(lo + positions[final])
+        metrics, frame = pool.evaluate_ordered(candidates, finals)
+        frame["pool_shortfall"] = [r.pool_shortfall for r in results]
+        frame["method_shortfall"] = [r.method_shortfall for r in results]
+        return FunnelReport(metrics, frame, pool.duration_ordered(finals))

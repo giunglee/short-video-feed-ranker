@@ -42,13 +42,13 @@ flowchart LR
 
 ```python
 from pathlib import Path
-from feed_ranker.recommendation.artifacts import load_ranker, load_retriever
+from feed_ranker.inference.artifacts import load_ranker, load_retriever
 from feed_ranker.recommendation.contracts import CandidateScope, Request
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
 
 # These directories contain manifest.json + state.pt, with no dataset dependency.
-retriever = load_retriever(Path("artifacts/deep_funnel_seed42/inference/mf"))
-ranker = load_ranker(Path("artifacts/deep_funnel_seed42/inference/ranker")).ranker
+retriever = load_retriever(Path("artifacts/inference/seed42/mf"))
+ranker = load_ranker(Path("artifacts/inference/seed42/ranker")).ranker
 pipeline = RecommendationPipeline(retriever, ranker, budget=50, k=10)
 response = pipeline.recommend(
     Request(query_id="request-001", user_id=raw_user_id),
@@ -61,14 +61,21 @@ recommended_ids = response.items
 
 Implementation responsibilities:
 
-- [`recommendation/pipeline.py`](../src/feed_ranker/recommendation/pipeline.py): execution and stage checks.
-- [`recommendation/retrieval.py`](../src/feed_ranker/recommendation/retrieval.py),
-  [`ranking.py`](../src/feed_ranker/recommendation/ranking.py): current model adapters.
-- [`data/recommendation.py`](../src/feed_ranker/data/recommendation.py): train-fitted candidate features.
-- [`recommendation/artifacts.py`](../src/feed_ranker/recommendation/artifacts.py): validated inference loading and typed artifact metadata.
-- [`training/export.py`](../src/feed_ranker/training/export.py): offline artifact export and legacy checkpoint conversion.
-- [`training/funnel.py`](../src/feed_ranker/training/funnel.py): observed benchmark, label alignment and frozen-reference policy.
-- [`training/funnel_evaluation.py`](../src/feed_ranker/training/funnel_evaluation.py): label-based metrics.
+- **Features:** [`features/config.py`](../src/feed_ranker/features/config.py) declares inputs; [`features/kuairec.py`](../src/feed_ranker/features/kuairec.py) fits training lookups and builds candidate features from saved state.
+- **Models:** [`models/`](../src/feed_ranker/models) contains shared mathematical implementations; `ranking_factory.py` constructs them from an explicit `ModelSpec`.
+- **Training:** [`training/`](../src/feed_ranker/training) owns optimization, sampling, baseline fitting and artifact export. It invokes evaluation without owning its implementation.
+- **Inference:** [`inference/`](../src/feed_ranker/inference) loads artifacts and adapts fitted models to `retrieve` / `score`. Loading requires no experiment dataset or recipe.
+- **Recommendation:** [`recommendation/`](../src/feed_ranker/recommendation) owns request/result contracts, pipeline ordering and label-free traces. The pipeline is unchanged when a fitted model is replaced.
+- **Evaluation:** [`evaluation/kuairec.py`](../src/feed_ranker/evaluation/kuairec.py) builds observed scopes and verifies splits; [`evaluation/funnel.py`](../src/feed_ranker/evaluation/funnel.py) aligns response IDs to labels and returns `FunnelReport(metrics, per_user, duration)`.
+- **Experiments:** [`evaluate_funnel.py`](../src/feed_ranker/experiments/evaluate_funnel.py) assembles the benchmark from ready artifacts. [`convert_inference.py`](../src/feed_ranker/experiments/convert_inference.py) separately migrates old runs and checks the frozen Deep reference.
+
+The experiment no longer maps candidate IDs to label-array positions or constructs trace rows:
+
+```python
+results = [pipeline.recommend(request, scope) for request, scope in benchmark]
+report = FunnelEvaluator(benchmark.pool).evaluate(results)
+RecommendationTrace.from_results(results).write(output_prefix)
+```
 
 ### Training → artifact → inference
 
@@ -97,8 +104,8 @@ Unsupported schemas, inconsistent vocabulary sizes, corrupt state and incompatib
 weights fail explicitly. Unknown categorical IDs retain the existing OOV behavior.
 
 `RecallTrainingState` supplies the sampler with positive/negative/neutral histories;
-it has no evaluation pools or file paths. `ObservedBenchmark` owns query scopes,
-labels and result alignment. The frozen Deep/cap-2/user-XAUC restrictions belong to
+it has no evaluation pools or file paths. `ObservedBenchmark` owns query scopes and labels; `FunnelEvaluator` owns response
+alignment and metrics. The frozen Deep/cap-2/user-XAUC restrictions belong to
 `FrozenDeepReference`, not the generic loader. Export preserves historical MF row
 mappings, including unsupported users; rebuilding a vocabulary could change which
 embedding belongs to a user.
@@ -109,12 +116,13 @@ encoder support; this refactor does not promote those experiments or change the
 frozen feature recipe. Training event duration and candidate training-median duration
 remain distinct, explicit source policies.
 
-The CLI below supports `--execution replay` (default, keyed saved retrieval scores
-and cached rank predictions) and `--execution model` (actual retrievers and selected-
-candidate ranker inference). Both use the same pipeline. The CLI additionally
-computes the full-pool reference and checks frozen candidate parity; it is a
-benchmark, not a serving endpoint. Its trace exports record source rank, retrieval
-score, ranking score and final rank, with input/checkpoint hashes in the manifest.
+The benchmark loads existing artifacts; it never exports or reconstructs a model.
+`--execution replay` caches their scores for repeated budget comparisons;
+`--execution model` runs the actual retriever and selected-candidate ranker for each
+request. Both use the same pipeline and evaluator. Full-pool scoring is an explicit
+offline reference. Candidate traces retain source rank, both scores and final rank;
+a separate request trace retains artifact identities and shortfalls even when no
+candidates were returned. Labels and duration cohorts stay in evaluation reports.
 
 This version runs one retrieval channel at a time. Multi-channel allocation and
 merging remain a separate change. Exact cooccurrence retains a quadratic item
@@ -223,7 +231,7 @@ and final NDCG across all five seeds; maximum prediction difference is 4.77e-7.
 All three actual retrievers preserve the saved top-100 ordering for all 7,176 users
 (seed42 for MF). Cooccurrence's query-wise versus batch-wise floating-point scores
 differ by at most 4.89e-4, with unchanged candidate ordering. The refactored tree
-passes 77 synthetic tests and Ruff. Artifact checks cover source-directory removal,
+passes 82 synthetic tests and Ruff. Artifact checks cover source-directory removal,
 feature/architecture substitution, exact ID/support preservation and incompatible state. These are migration checks, not new quality gains.
 
 Original frozen-evaluation checks:
@@ -240,23 +248,40 @@ Original frozen-evaluation checks:
   validation use, historical test exposure and snapshot timing limit generalization.
   Seed SD measures training variation, not data uncertainty or online lift.
 
-For each frozen Deep checkpoint, pair the matching MF seed with the shared baselines:
+Convert historical runs **once**. New training workflows can call `export_ranker`
+or `export_retriever` directly with fitted state and provenance:
 
 ```sh
-python -m feed_ranker.experiments.deep_funnel \
-  --data PATH/TO/recall_data \
-  --ranking-data PATH/TO/prepared_architecture_data \
+python -m feed_ranker.experiments.convert_inference ranker \
   --checkpoint PATH/TO/frozen_deep/best.pt \
   --checkpoint-sha256 SHA256_FROM_FROZEN_FINALISTS \
-  --reference-trace PATH/TO/saved_validation_trace.parquet \
-  --runs PATH/TO/popularity PATH/TO/cooccurrence PATH/TO/matching_mf \
-  --output artifacts/deep_funnel_seed42 --threads 1
+  --ranking-data PATH/TO/prepared_architecture_data \
+  --recall-data PATH/TO/recall_data \
+  --frozen-deep-trace PATH/TO/saved_validation_trace.parquet \
+  --output artifacts/inference/seed42/ranker
+
+# Repeat for popularity, cooccurrence and the matching-seed MF run.
+python -m feed_ranker.experiments.convert_inference retriever \
+  --data PATH/TO/recall_data --run PATH/TO/matching_mf \
+  --output artifacts/inference/seed42/mf
+
+python -m feed_ranker.experiments.evaluate_funnel \
+  --data PATH/TO/recall_data \
+  --ranking-data PATH/TO/prepared_architecture_data \
+  --ranker artifacts/inference/seed42/ranker \
+  --retrievers artifacts/inference/seed42/mf \
+  --output artifacts/funnel_seed42 --threads 1
 ```
 
-With `--execution model`, the output also contains self-contained ranker and retriever
-artifacts under `inference/`; replay exports the ranker artifact only.
-The output includes keyed rank predictions and a provenance manifest, per-user
-metrics, raw-ID candidates, duration diagnostics and a full-pool ranker reference.
-The superseded `recall_rank` and `ranking_target` experiment runners were removed
-from active source. Reproduce those historical pilots from their original source
-snapshots or commit `64f7a40`; the current entrypoint is `deep_funnel`.
+Pass multiple retrieval artifact directories to compare them separately; this does
+not merge channels. Add `--execution model` for selected-candidate model execution.
+Evaluation still verifies the exact train/validation pair membership against the
+ranking preparation. Runtime inference itself only needs the artifact directories.
+Outputs include per-user metrics, duration diagnostics, request/candidate traces,
+padded raw-ID candidate lists, predictions and input hashes.
+
+Historical experiment runners (`recall_rank`, `ranking_target`, `deep_funnel`) are
+preserved in their original source snapshots and Git history. Their current
+replacement is `evaluate_funnel`; old Python import paths are intentionally removed.
+Artifact format `recommendation-artifact-v1` is unchanged, so previously exported
+models load directly without conversion or retraining.

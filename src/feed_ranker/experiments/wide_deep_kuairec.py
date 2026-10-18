@@ -21,15 +21,12 @@ import torch
 from torch import nn
 
 from feed_ranker.artifacts import collect_run_provenance, sha256, write_json
-from feed_ranker.data.config import (
-    DataConfig,
-    LabelConfig,
-    resolve_feature_config,
-)
+from feed_ranker.data.config import DataConfig, LabelConfig
 from feed_ranker.data.kuairec_dataset import KuaiRecDataset
+from feed_ranker.evaluation.ranking import METRICS, RegressionEvaluator
+from feed_ranker.experiments.ranking_recipe import resolve_feature_config
 from feed_ranker.models import ConstantRegressor, DeepNN, LinearRegression, WideDeepNN, WideNN
 from feed_ranker.training import OptimizerConfig, TrainConfig, Trainer
-from feed_ranker.training.evaluation import METRICS, RegressionEvaluator
 
 MODELS = ("deep_nn", "wide_deep_nn", "wide_nn", "linear_reg")
 

@@ -24,7 +24,7 @@ from feed_ranker.experiments.ranking_architecture import (
     fit_recipe,
     score_checkpoint,
 )
-from feed_ranker.training.ranking import ARCHITECTURES, Recipe
+from feed_ranker.experiments.ranking_recipe import ARCHITECTURES, Recipe
 
 
 def initial_recipes() -> list[Recipe]:

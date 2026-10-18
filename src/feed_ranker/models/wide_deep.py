@@ -17,7 +17,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from feed_ranker.data.config import FeatureConfig
+from feed_ranker.features.config import FeatureConfig
 from feed_ranker.models.components.feature_encoder import (
     CategoricalMainEffects,
     CrossFeatureEncoder,

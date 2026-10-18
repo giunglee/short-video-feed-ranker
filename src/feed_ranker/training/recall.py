@@ -1,10 +1,11 @@
-"""Offline observed-pair sampling and flattened-pool scoring for recall experiments."""
+"""Training-only baseline fitting and observed-pair sampling."""
 
 import numpy as np
 import torch
 
-from feed_ranker.data.recall import RecallData, RecallTrainingState
-from feed_ranker.models.recall import BPRMF, CosineCooccurrence
+from feed_ranker.data.recall import RecallTrainingState
+from feed_ranker.inference.retrievers import CooccurrenceRetriever, PopularityRetriever
+from feed_ranker.models.recall import CosineCooccurrence
 
 
 def incidence(data: RecallTrainingState) -> torch.Tensor:
@@ -15,41 +16,20 @@ def incidence(data: RecallTrainingState) -> torch.Tensor:
     return matrix
 
 
-def baseline_scores(data: RecallData, method: str) -> tuple[np.ndarray, dict[str, int]]:
-    """Scores aligned with flattened eligible pools; -inf means unsupported."""
-    h = incidence(data.training)
-    counts = h.sum(0)
+def fit_baseline(
+    data: RecallTrainingState, method: str, artifact_id: str
+) -> PopularityRetriever | CooccurrenceRetriever:
+    """Fit positive-user counts or cosine similarities using training histories only."""
     if method == "popularity":
-        scores = counts.numpy()[data.pools.items].copy()
-    elif method == "cooccurrence":
-        model = CosineCooccurrence(h)
-        scores = np.empty(len(data.pools.items), dtype=np.float32)
-        for start in range(0, len(data.users), 64):
-            stop = min(start + 64, len(data.users))
-            values = model.score_users(start, stop)
-            lo, hi = data.pools.offsets[[start, stop]]
-            scores[lo:hi] = values[data.pools.users[lo:hi] - start, data.pools.items[lo:hi]]
-    else:
-        raise ValueError(f"Unknown baseline {method}")
-    # Zero evidence is not an implicit popularity/random fallback.
-    scores[scores <= 0] = -np.inf
-    return scores, {"items_with_positive_support": int(counts.gt(0).sum())}
-
-
-@torch.no_grad()
-def pool_scores(model: BPRMF, data: RecallData) -> np.ndarray:
-    model.eval()
-    scores = np.empty(len(data.pools.items), dtype=np.float32)
-    for start in range(0, len(scores), 32768):
-        stop = min(start + 32768, len(scores))
-        users = torch.from_numpy(data.pools.users[start:stop])
-        items = torch.from_numpy(data.pools.items[start:stop])
-        scores[start:stop] = model.score_pairs(users, items).numpy()
-    allowed = (
-        data.training.supported[data.pools.users] & model.item_updated.numpy()[data.pools.items]
-    )
-    scores[~allowed] = -np.inf
-    return scores
+        counts = np.bincount(np.concatenate(data.positive), minlength=len(data.items)).astype(
+            np.float32
+        )
+        return PopularityRetriever(data.items, counts, artifact_id)
+    if method == "cooccurrence":
+        return CooccurrenceRetriever(
+            data.users, data.items, CosineCooccurrence(incidence(data)), artifact_id
+        )
+    raise ValueError(f"Unknown baseline {method}")
 
 
 class ObservedSampler:

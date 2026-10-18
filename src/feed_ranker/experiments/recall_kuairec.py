@@ -15,9 +15,10 @@ from torch.nn import functional as F
 
 from feed_ranker.artifacts import collect_run_provenance, save_checkpoint, sha256, write_json
 from feed_ranker.data.recall import RecallData
+from feed_ranker.evaluation.kuairec import ObservedBenchmark
+from feed_ranker.evaluation.retrieval import evaluate, pool_scores, score_pool
 from feed_ranker.models.recall import BPRMF
-from feed_ranker.training.recall import ObservedSampler, baseline_scores, pool_scores
-from feed_ranker.training.recall_evaluation import evaluate
+from feed_ranker.training.recall import ObservedSampler, fit_baseline
 
 
 def export(data: RecallData, scores: np.ndarray, output: Path) -> dict[str, Any]:
@@ -78,7 +79,11 @@ def run(
     if method != "mf":
         if resume:
             raise ValueError("Only MF supports resume")
-        scores, support = baseline_scores(data, method)
+        retriever = fit_baseline(data.training, method, sha256(output / "config.json"))
+        scores = score_pool(retriever, ObservedBenchmark(data))
+        support = {
+            "items_with_positive_support": len(np.unique(np.concatenate(data.training.positive)))
+        }
         summary = export(data, scores, output)
         summary["support"] = support
     else:

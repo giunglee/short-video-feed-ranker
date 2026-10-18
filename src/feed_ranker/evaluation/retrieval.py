@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import torch
 
 from feed_ranker.data.recall import RecallData
+from feed_ranker.models.recall import BPRMF
+from feed_ranker.recommendation.contracts import CandidateScope, Request, Retriever
 from feed_ranker.recommendation.ordering import (
     ordered_positions as ordered_positions,
 )
@@ -89,3 +93,35 @@ def evaluate(
         "ordering": "ranker" if rank_scores is not None else "retrieval",
     }
     return summary, frame, selected
+
+
+def score_pool(
+    retriever: Retriever, queries: Iterable[tuple[Request, CandidateScope]]
+) -> np.ndarray:
+    """Offline reference in scope order; omitted IDs are -inf, never fabricated negatives."""
+    parts = []
+    for request, scope in queries:
+        result = retriever.retrieve(request, scope, len(scope.items))
+        positions = pd.Index(scope.items).get_indexer(result.candidates.items)
+        if (positions < 0).any() or len(positions) != result.supported_count:
+            raise ValueError("Retriever returned inconsistent full-pool support")
+        scores = np.full(len(scope.items), -np.inf, dtype=np.float64)
+        scores[positions] = result.candidates.scores
+        parts.append(scores)
+    return np.concatenate(parts) if parts else np.empty(0, dtype=np.float64)
+
+
+@torch.no_grad()
+def pool_scores(model: BPRMF, data: RecallData) -> np.ndarray:
+    model.eval()
+    scores = np.empty(len(data.pools.items), dtype=np.float32)
+    for start in range(0, len(scores), 32768):
+        stop = min(start + 32768, len(scores))
+        users = torch.from_numpy(data.pools.users[start:stop])
+        items = torch.from_numpy(data.pools.items[start:stop])
+        scores[start:stop] = model.score_pairs(users, items).numpy()
+    allowed = (
+        data.training.supported[data.pools.users] & model.item_updated.numpy()[data.pools.items]
+    )
+    scores[~allowed] = -np.inf
+    return scores

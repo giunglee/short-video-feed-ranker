@@ -15,10 +15,10 @@ import torch
 
 from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.data.recall import Pools, RecallData, classify, first_events, prepare
+from feed_ranker.evaluation.retrieval import evaluate, ordered_positions
 from feed_ranker.experiments.recall_kuairec import run
 from feed_ranker.models.recall import BPRMF
-from feed_ranker.training.recall import ObservedSampler, baseline_scores
-from feed_ranker.training.recall_evaluation import evaluate, ordered_positions
+from feed_ranker.training.recall import ObservedSampler, fit_baseline
 
 
 class RecallTests(unittest.TestCase):
@@ -253,7 +253,10 @@ class RecallTests(unittest.TestCase):
             ),
         )
         data.training = SimpleNamespace(**vars(data))
-        scores, _ = baseline_scores(data, "cooccurrence")
+        scores = fit_baseline(data.training, "cooccurrence", "fixture").model.score_users(
+            0, len(data.users)
+        )[data.pools.users, data.pools.items]
+        scores[scores <= 0] = -np.inf
         np.testing.assert_allclose(scores[:2], np.array([1 / np.sqrt(3)] * 2), rtol=1e-6)
         self.assertTrue(np.isneginf(scores[2]))
 

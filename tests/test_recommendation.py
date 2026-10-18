@@ -1,12 +1,23 @@
 """Behavioral boundaries of composed inference, independent of model training."""
 
+import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import torch
 
+from feed_ranker.evaluation.funnel import FunnelEvaluator, GainPool
+from feed_ranker.evaluation.retrieval import score_pool
+from feed_ranker.inference.replay import ReplayRanker, ReplayRetriever, ScoreTable
+from feed_ranker.inference.retrievers import (
+    CooccurrenceRetriever,
+    MFRetriever,
+    PopularityRetriever,
+)
 from feed_ranker.models.recall import BPRMF, CosineCooccurrence
 from feed_ranker.recommendation.contracts import (
     CandidateScope,
@@ -15,14 +26,8 @@ from feed_ranker.recommendation.contracts import (
     ScoredItems,
 )
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
-from feed_ranker.recommendation.replay import ReplayRanker, ReplayRetriever, ScoreTable
-from feed_ranker.recommendation.retrieval import (
-    CooccurrenceRetriever,
-    MFRetriever,
-    PopularityRetriever,
-)
-from feed_ranker.training.funnel_evaluation import GainPool
-from feed_ranker.training.recall import baseline_scores
+from feed_ranker.recommendation.traces import RecommendationTrace
+from feed_ranker.training.recall import fit_baseline
 
 
 class RecordingRanker:
@@ -156,7 +161,10 @@ class RecommendationTests(unittest.TestCase):
         )
         cooc = CooccurrenceRetriever(users, items, CosineCooccurrence(h), "fit")
         data.training = SimpleNamespace(**vars(data))
-        expected, _ = baseline_scores(data, "cooccurrence")
+        expected = fit_baseline(data.training, "cooccurrence", "fixture").model.score_users(
+            0, len(data.users)
+        )[data.pools.users, data.pools.items]
+        expected[expected <= 0] = -np.inf
         got = cooc.retrieve(self.request, self.scope, 10).candidates
         index = pd.Index(items).get_indexer(got.items)
         np.testing.assert_allclose(got.scores, expected[index])
@@ -193,6 +201,76 @@ class RecommendationTests(unittest.TestCase):
         pool.ratios[:] = 100
         after = pipeline.recommend(self.request, self.scope)
         np.testing.assert_array_equal(before.items, after.items)
+
+    def test_response_evaluation_aligns_ids_and_retains_full_pool_ideal(self) -> None:
+        items = np.array([10, 20, 30])
+        pool = GainPool(
+            np.array([7]), items, np.array([0, 3]), np.array([2.0, 1.0, 0.0]), np.ones(3), k=2
+        )
+        retriever = PopularityRetriever(items, np.array([0.0, 1.0, 0.0]), "partial")
+        result = RecommendationPipeline(retriever, RecordingRanker(), 3, 2).recommend(
+            Request("7", 7), CandidateScope(items)
+        )
+        report = FunnelEvaluator(pool).evaluate([result])
+        self.assertAlmostEqual(report.metrics["cap2_ndcg10"], 1 / (2 + 1 / np.log2(3)))
+        self.assertEqual(report.per_user.method_shortfall.iloc[0], 2)
+        self.assertEqual(report.duration.selected_slots.sum(), 1)
+        with self.assertRaisesRegex(ValueError, "Missing/extra"):
+            FunnelEvaluator(pool).evaluate([])
+        for malformed in (
+            replace(result, request=Request("wrong-query", 7)),
+            replace(result, pool_size=2),
+            replace(result, ranked=ScoredItems(np.array([30]), np.ones(1))),
+            replace(result, final_positions=np.array([-1])),
+        ):
+            with self.subTest(result=malformed), self.assertRaises(ValueError):
+                FunnelEvaluator(pool).evaluate([malformed])
+
+    def test_response_evaluation_rejects_out_of_pool_ids_and_does_not_reorder(self) -> None:
+        items = np.array([20, 10, 30])  # Pool order is intentionally not raw-ID order.
+        pool = GainPool(
+            np.array([7]), items, np.array([0, 3]), np.array([1.0, 2.0, 0.0]), np.ones(3), k=2
+        )
+        retriever = PopularityRetriever(items, np.array([3.0, 2.0, 1.0]), "counts")
+        result = RecommendationPipeline(retriever, RecordingRanker(), 2, 2).recommend(
+            Request("7", 7), CandidateScope(items)
+        )
+        evaluator = FunnelEvaluator(pool)
+        self.assertEqual(evaluator.evaluate([result]).metrics["cap2_ndcg10"], 1.0)
+        reversed_result = replace(result, final_positions=result.final_positions[::-1])
+        self.assertLess(evaluator.evaluate([reversed_result]).metrics["cap2_ndcg10"], 1.0)
+        invalid = ScoredItems(np.array([999, 10]), np.ones(2))
+        with self.assertRaisesRegex(ValueError, "outside observed"):
+            evaluator.evaluate([replace(result, retrieved=invalid, ranked=invalid)])
+
+    def test_trace_preserves_empty_queries_artifacts_and_selected_order(self) -> None:
+        pipe = RecommendationPipeline(self.pop, RecordingRanker(), 3, 2)
+        first = pipe.recommend(self.request, self.scope)
+        empty = pipe.recommend(Request("empty", 8), CandidateScope(np.array([40])))
+        trace = RecommendationTrace.from_results([first, empty])
+        self.assertEqual(len(trace.requests), 2)
+        self.assertEqual(trace.requests.method_shortfall.tolist(), [0, 1])
+        self.assertEqual(trace.requests.retrieval_artifact.tolist(), ["counts-v1"] * 2)
+        np.testing.assert_array_equal(
+            trace.candidates.sort_values("final_rank").query("final_rank > 0").video_id, first.items
+        )
+        self.assertFalse(set(trace.requests) & {"watch_ratio", "label", "outcome"})
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = Path(tmp) / "result"
+            trace.write(prefix)
+            packed = np.load(f"{prefix}_candidates.npz")
+            np.testing.assert_array_equal(packed["items"][1], [-1, -1, -1])
+            self.assertEqual(len(pd.read_parquet(f"{prefix}_requests.parquet")), 2)
+        with self.assertRaisesRegex(ValueError, "Duplicate query"):
+            RecommendationTrace.from_results([first, first])
+
+    def test_full_pool_replay_preserves_float64_ordering(self) -> None:
+        items = np.array([10, 20, 30])
+        values = np.array([1.0, 1.0 + 1e-10, -np.inf])
+        frame = pd.DataFrame({"query_id": ["q"] * 3, "video_id": items, "score": values})
+        retriever = ReplayRetriever("fixture", ScoreTable(frame, "saved", allow_unsupported=True))
+        got = score_pool(retriever, [(Request("q", 7), CandidateScope(items))])
+        np.testing.assert_array_equal(got, values)
 
 
 if __name__ == "__main__":

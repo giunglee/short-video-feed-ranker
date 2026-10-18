@@ -14,21 +14,23 @@ import pandas as pd
 import torch
 
 from feed_ranker.artifacts import sha256, write_json
-from feed_ranker.data.config import (
+from feed_ranker.data.recall import VERSION, RecallData
+from feed_ranker.evaluation.retrieval import pool_scores
+from feed_ranker.experiments.convert_inference import convert_checkpoint, convert_retriever
+from feed_ranker.features.config import (
     CrossFeatureConfig,
     DenseFeatureConfig,
     EmbeddingFeatureConfig,
     FeatureConfig,
 )
-from feed_ranker.data.recall import VERSION, RecallData
-from feed_ranker.data.recommendation import KuaiRecFeatures
-from feed_ranker.models.ranking import ModelSpec, build_model
+from feed_ranker.features.kuairec import KuaiRecFeatureBuilder
+from feed_ranker.inference.artifacts import TrainingProvenance, load_ranker, load_retriever
+from feed_ranker.inference.rankers import ModelRanker
+from feed_ranker.models.ranking_factory import ModelSpec, build_model
 from feed_ranker.models.recall import BPRMF
-from feed_ranker.recommendation.artifacts import TrainingProvenance, load_ranker, load_retriever
 from feed_ranker.recommendation.contracts import CandidateScope, Request
-from feed_ranker.recommendation.ranking import ModelRanker
-from feed_ranker.training.export import export_checkpoint, export_ranker, export_retriever
-from feed_ranker.training.recall import baseline_scores, pool_scores
+from feed_ranker.training.export import export_ranker
+from feed_ranker.training.recall import fit_baseline
 
 
 class ArtifactTests(unittest.TestCase):
@@ -38,7 +40,7 @@ class ArtifactTests(unittest.TestCase):
         self.items = np.array([200, 100])
         self.provenance = TrainingProvenance("checkpoint", "data", 42, 3, 2.0, "mae")
 
-    def features(self, include_age: bool) -> KuaiRecFeatures:
+    def features(self, include_age: bool) -> KuaiRecFeatureBuilder:
         vocab = {"user_id": ["10", "20"], "video_id": ["100", "200"]}
         profiles = pd.DataFrame(index=pd.Index([10, 20], dtype="int64"))
         if include_age:
@@ -48,7 +50,7 @@ class ArtifactTests(unittest.TestCase):
             dense_configs=[DenseFeatureConfig("video_duration", "log1p_nonnegative")],
             embedding_configs=[EmbeddingFeatureConfig(n, len(v) + 1, 2) for n, v in vocab.items()],
         )
-        return KuaiRecFeatures(
+        return KuaiRecFeatureBuilder(
             config, vocab, profiles, pd.Series([1000.0, 2000.0], index=[100, 200])
         )
 
@@ -83,7 +85,7 @@ class ArtifactTests(unittest.TestCase):
     def test_wide_cross_uses_fitted_categories_and_unknown_user_has_no_match(self) -> None:
         features = self.features(True)
         features.config.cross_feature_configs = [CrossFeatureConfig("young_short")]
-        builder = KuaiRecFeatures(
+        builder = KuaiRecFeatureBuilder(
             features.config,
             features.vocab,
             features.profiles,
@@ -138,7 +140,7 @@ class ArtifactTests(unittest.TestCase):
                 },
                 checkpoint,
             )
-            export_checkpoint(checkpoint, source, source / "duration.parquet", root / "artifact")
+            convert_checkpoint(checkpoint, source, source / "duration.parquet", root / "artifact")
             source.rename(root / "unavailable")
             loaded = load_ranker(root / "artifact")
             np.testing.assert_array_equal(
@@ -222,8 +224,16 @@ class ArtifactTests(unittest.TestCase):
                     torch.save({"model": model.state_dict(), "config": config}, run / "best.pt")
                     expected[method] = pool_scores(model, data)
                 else:
-                    expected[method] = baseline_scores(data, method)[0]
-                export_retriever(data, run, root / method)
+                    fitted = fit_baseline(data.training, method, "fixture")
+                    if method == "popularity":
+                        values = fitted.counts[data.pools.items].copy()
+                    else:
+                        values = fitted.model.score_users(0, len(data.users))[
+                            data.pools.users, data.pools.items
+                        ]
+                    values[values <= 0] = -np.inf
+                    expected[method] = values
+                convert_retriever(data, run, root / method)
             source.rename(root / "unavailable")
             with patch("pandas.read_parquet", side_effect=AssertionError("No dataset reads")):
                 for method in expected:

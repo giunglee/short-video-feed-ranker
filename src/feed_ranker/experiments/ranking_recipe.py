@@ -15,16 +15,15 @@ import numpy as np
 import torch
 from torch import nn
 
-from feed_ranker.data.config import (
+from feed_ranker.data.config import DataConfig, LabelConfig
+from feed_ranker.data.kuairec_dataset import KuaiRecDataset
+from feed_ranker.features.config import (
     CrossFeatureConfig,
-    DataConfig,
     DenseFeatureConfig,
     EmbeddingFeatureConfig,
     FeatureConfig,
-    LabelConfig,
 )
-from feed_ranker.data.kuairec_dataset import KuaiRecDataset
-from feed_ranker.models.ranking import ARCHITECTURES, ModelSpec, build_model
+from feed_ranker.models.ranking_factory import ARCHITECTURES, ModelSpec, build_model
 
 
 @dataclass(frozen=True)
@@ -105,3 +104,28 @@ def make_dataset(directory: Path, recipe: Recipe) -> KuaiRecDataset:
     return KuaiRecDataset(
         DataConfig(feature_config(metadata, recipe), LabelConfig("watch_ratio")), directory
     )
+
+
+def resolve_feature_config(metadata: dict[str, Any], model: str, use_ids: bool) -> FeatureConfig:
+    spec = metadata["spec"]
+    categorical = [
+        name for name in spec["categorical"] if use_ids or name not in ("user_id", "video_id")
+    ]
+    embeddings = []
+    if model != "wide_nn":
+        # reasonable default, not from any specific production config
+        embeddings = [
+            EmbeddingFeatureConfig(name, len(metadata["vocab"][name]) + 1, 8)
+            for name in categorical
+        ]
+    crosses = []
+    if model in ("wide_nn", "wide_deep_nn"):
+        crosses = [CrossFeatureConfig(name) for name in spec.get("crosses", {})]
+    features = FeatureConfig(
+        dense_configs=[DenseFeatureConfig(name, "log1p_nonnegative") for name in spec["dense"]],
+        embedding_configs=embeddings,
+        cross_feature_configs=crosses,
+    )
+    if not features.dense_configs:
+        raise ValueError("This experiment requires at least one dense feature")
+    return features
