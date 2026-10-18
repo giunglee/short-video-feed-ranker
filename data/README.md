@@ -27,6 +27,10 @@ only. Snapshot timing and feature selection require review before model changes.
 
 ## Prepare and train
 
+The [capped-label architecture study](../docs/ranking_architecture.md#reproduce-and-inspect)
+provides the current four-model comparison. The commands below reproduce the
+earlier raw-label reference and smaller debugging runs.
+
 ```bash
 # Python 3.10+
 python -m venv .venv

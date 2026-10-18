@@ -13,20 +13,23 @@ pairs, and which weighting, feature, and architecture choices improve it?
 
 - **Clean observations before comparing models.** Remove complete duplicate events,
   retain distinct-time repeats, and keep each user–video pair in one split.
-- **Inspect the label before choosing the loss.** Extreme watch ratios mix short
-  video durations with long play times; retain raw labels and start with MAE.
+- **Inspect the label before choosing the objective.** Extreme watch ratios mix
+  short video durations with long play times. Start with raw-label MAE, then
+  explicitly test bounded utility using capped-label MAE.
 - **Measure generalization at the same checkpoint.** Compare validation with a
   fixed training sample in evaluation mode, rather than training-time loss.
-- **Declare a practical budget.** Single-seed diagnostics support a 120-epoch cap
-  with best-validation-MAE selection. Multi-seed model gains are not yet established.
+- **Compare architectures without requiring a preferred winner.** In a bounded
+  five-seed study, Deep `[64, 32]` beat the selected Wide & Deep recipe on capped
+  user-XAUC. Its test advantage over Wide was consistent but small.
 
 ## Evidence and next steps
 
 1. **EDA — complete:** [label/feature findings](data/kuairec_eda_findings.md)
    and [visual notebook](data/kuairec_eda.ipynb).
 2. **Training diagnostics — complete:** [settings, evidence, and budget rationale](docs/datasets.md#training-recipe-and-budget).
-3. **Ablations — next:** compare weighting, features, and architectures with matched
-   seeds, then evaluate frozen choices on small-matrix test data.
+3. **Ranking architecture comparison — complete:** [protocol, results, limitations,
+   and reproduction](docs/ranking_architecture.md). Four model families, 37 training
+   runs, and 20 frozen finalists; capped validation user-XAUC selects checkpoints.
 
 **Limits:** the split tests pair generalization, not future-time prediction.
 Snapshot feature timing is unverified. Historical test-label inspection is
@@ -44,8 +47,8 @@ explicitly disclosed. This repository studies offline modeling, not online servi
   [evaluation](src/feed_ranker/training/evaluation.py),
   [metrics](src/feed_ranker/training/metrics.py),
   [cohort traces](src/feed_ranker/experiments/diagnostics.py).
-- **Experiments:** [single run](src/feed_ranker/experiments/wide_deep_kuairec.py)
-  and [matched-seed comparison](src/feed_ranker/experiments/multi_seed.py).
+- **Experiments:** [architecture construction](src/feed_ranker/experiments/ranking_architecture.py)
+  and [bounded study](src/feed_ranker/experiments/ranking_study.py).
 
 ## Future directions
 
@@ -59,8 +62,7 @@ explicitly disclosed. This repository studies offline modeling, not online servi
 
 - [Setup, training commands, and checks](data/README.md).
 - [Data protocol and frozen training recipe](docs/datasets.md).
-- [Progress](docs/milestones.md). Recall remains paused until ranking comparisons
-  and their interpretation are complete.
+- [Progress](docs/milestones.md). Retrieval and funnel evaluation are a separate milestone.
 
 Reference: [Wide & Deep, Cheng et al.](https://arxiv.org/abs/1606.07792).
 Code: [MIT](LICENSE); datasets retain their authors' licenses.

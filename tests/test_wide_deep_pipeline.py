@@ -29,6 +29,39 @@ from feed_ranker.training.optimizer import build_optimizer
 
 
 class PipelineTest(unittest.TestCase):
+    def test_duration_bands_and_wide_indicators(self) -> None:
+        from feed_ranker.data.kuairec_preprocessor import duration_band
+
+        values = pd.Series([0, 5000, 5001, 10000, 10001, 20001, 40001, 60001, -1, np.nan])
+        bands = duration_band(values)
+        self.assertEqual(
+            bands.iloc[:8].tolist(),
+            ["0–5s", "0–5s", "5–10s", "5–10s", "10–20s", "20–40s", "40–60s", ">60s"],
+        )
+        self.assertTrue(bands.iloc[8:].isna().all())
+        spec = {
+            **self.spec,
+            "categorical": ["user_id", "video_id", "duration_band"],
+            "crosses": {
+                "short_main": {"duration_band": "0–5s"},
+                "short_user": {"duration_band": "0–5s", "user_id": 0},
+            },
+        }
+        output = self.root / "bands"
+        KuaiRecPreprocessor(self.raw, output, spec, split_seed=5, val_ratio=0.25).run()
+        frame = pd.read_parquet(output / "train.parquet")
+        self.assertTrue(frame.short_main.eq(1).all())
+        np.testing.assert_array_equal(frame.short_user, frame.raw_user_id.eq(0).astype(float))
+        result = run_experiment(
+            output,
+            self.root / "bands_run",
+            "wide_deep_nn",
+            TrainConfig(epochs=1, batch_size=16),
+            [8, 4],
+            dropout=0.0,
+        )
+        self.assertTrue(np.isfinite(result["val"]["mae"]))
+
     @classmethod
     def setUpClass(cls) -> None:
         torch.set_num_threads(1)
