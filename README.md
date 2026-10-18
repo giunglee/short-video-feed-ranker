@@ -52,7 +52,9 @@ explicitly disclosed. This repository studies offline modeling, not online servi
 
 ## Future directions
 
-- **Next:** one learned retrieval (recall) experiment after ranking analysis.
+- **Retrieval:** popularity, cosine item cooccurrence and BPR matrix factorization;
+  [protocol and evidence](docs/recall_decisions.md). The integration step measures
+  final-feed utility with the frozen Deep ranker.
 - **Later:** multi-task ranking, DIN/SASRec-style behavior modeling, graph-based
   recommendation, and incremental-value modeling.
 - These are research directions, not implemented capabilities. Each becomes an
