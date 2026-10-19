@@ -13,7 +13,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from feed_ranker.data.config import (
+from feed_ranker.features.config import (
     CrossFeatureConfig,
     DenseFeatureConfig,
     EmbeddingFeatureConfig,

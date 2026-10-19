@@ -10,7 +10,8 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from feed_ranker.experiments.recall_rank import candidate_features
+from feed_ranker.features.config import DenseFeatureConfig, FeatureConfig
+from feed_ranker.features.kuairec import KuaiRecFeatureBuilder
 
 
 class RecallRankTests(unittest.TestCase):
@@ -26,14 +27,20 @@ class RecallRankTests(unittest.TestCase):
                 items=np.array([10, 20]),
                 pools=SimpleNamespace(users=np.array([0, 0, 1]), items=np.array([1, 0, 1])),
             )
-            actual = candidate_features(data)
+            lookup = KuaiRecFeatureBuilder(
+                FeatureConfig(dense_configs=[DenseFeatureConfig("video_duration")]),
+                {},
+                pd.DataFrame(index=pd.Index([], dtype="int64")),
+                pd.Series([10000.0, 30000.0], index=[10, 20]),
+            )
+            actual = lookup.raw(data.users[data.pools.users], data.items[data.pools.items])
             self.assertEqual(actual.columns.tolist(), ["user_id", "video_id", "video_duration"])
             self.assertEqual(actual.video_id.tolist(), [20, 10, 20])
             self.assertEqual(actual.user_id.tolist(), [7, 7, 8])
             self.assertEqual(actual.video_duration.tolist(), [30000.0, 10000.0, 30000.0])
             data.items = np.array([10, 30])
             with self.assertRaisesRegex(ValueError, "Missing/invalid"):
-                candidate_features(data)
+                lookup.build(data.users[data.pools.users], data.items[data.pools.items])
 
 
 if __name__ == "__main__":

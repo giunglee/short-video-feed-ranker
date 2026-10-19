@@ -43,15 +43,18 @@ explicitly disclosed. This repository studies offline modeling, not online servi
 ## Review the implementation
 
 - **Data contracts and preparation:** [schema](src/feed_ranker/data/schema.py),
-  [configuration](src/feed_ranker/data/config.py),
+  [feature configuration](src/feed_ranker/features/config.py),
   [preprocessor](src/feed_ranker/data/kuairec_preprocessor.py),
   [loader](src/feed_ranker/data/kuairec_dataset.py).
 - **Model:** [Wide & Deep](src/feed_ranker/models/wide_deep.py) and its
   [feature encoders](src/feed_ranker/models/components/feature_encoder.py).
 - **Training and diagnosis:** [trainer](src/feed_ranker/training/trainer.py),
-  [evaluation](src/feed_ranker/training/evaluation.py),
-  [metrics](src/feed_ranker/training/metrics.py),
+  [evaluation](src/feed_ranker/evaluation/ranking.py),
+  [metrics](src/feed_ranker/evaluation/metrics.py),
   [cohort traces](src/feed_ranker/experiments/diagnostics.py).
+- **Recommendation:** [pipeline and contracts](src/feed_ranker/recommendation),
+  [inference adapters](src/feed_ranker/inference), [candidate features](src/feed_ranker/features/kuairec.py),
+  [funnel evaluator](src/feed_ranker/evaluation/funnel.py).
 - **Experiments:** [architecture construction](src/feed_ranker/experiments/ranking_architecture.py)
   and [bounded study](src/feed_ranker/experiments/ranking_study.py).
 

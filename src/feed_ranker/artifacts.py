@@ -36,7 +36,9 @@ def collect_run_provenance() -> dict[str, Any]:
 
 
 def _git_output(*args: str) -> str:
-    result = subprocess.run(["git", *args], capture_output=True, text=True)
+    # A CLI may be launched elsewhere with this source tree on PYTHONPATH.
+    source_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(["git", *args], cwd=source_root, capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else "unavailable"
 
 

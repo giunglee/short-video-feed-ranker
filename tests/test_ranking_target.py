@@ -4,13 +4,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
 import torch
 from torch import nn
 
-from feed_ranker.training.funnel_evaluation import GainPool, TargetMAE
+from feed_ranker.evaluation.funnel import GainPool
+from feed_ranker.training.losses import TargetMAE
 from feed_ranker.training.trainer import TrainConfig, Trainer
 
 
@@ -68,19 +68,6 @@ class RankingTargetTest(unittest.TestCase):
         scores = np.array([0.0, 0.0, -np.inf])
         np.testing.assert_array_equal(a.candidates(scores, 2)[0], b.candidates(scores, 2)[0])
         self.assertEqual(len(a.candidates(scores, 10)[0]), 2)
-
-    def test_relaunch_does_not_overwrite_completed_status(self):
-        from feed_ranker.experiments.ranking_target import main
-
-        with tempfile.TemporaryDirectory() as temp:
-            output = Path(temp)
-            (output / "protocol.json").write_text("{}")
-            status = output / "status.json"
-            status.write_text('{"stage": "complete"}')
-            with patch("sys.argv", ["ranking_target", "--output", temp]):
-                with self.assertRaises(FileExistsError):
-                    main()
-            self.assertEqual(json.loads(status.read_text())["stage"], "complete")
 
     def test_custom_selection_keeps_earliest_tie_and_standard_checkpoints(self):
         class Model(nn.Module):

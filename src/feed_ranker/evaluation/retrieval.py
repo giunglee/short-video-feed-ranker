@@ -2,34 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import torch
 
 from feed_ranker.data.recall import RecallData
-
-
-def tie_keys(user: int, items: np.ndarray, seed: int = 2026) -> np.ndarray:
-    """Stable SplitMix64 keys, independent of labels, Python hash, or M."""
-    with np.errstate(over="ignore"):
-        x = (
-            items.astype(np.uint64)
-            ^ np.uint64(user) * np.uint64(0x9E3779B97F4A7C15)
-            ^ np.uint64(seed)
-        )
-        x = (x ^ (x >> 30)) * np.uint64(0xBF58476D1CE4E5B9)
-        x = (x ^ (x >> 27)) * np.uint64(0x94D049BB133111EB)
-        return x ^ (x >> 31)
-
-
-def ordered_positions(scores: np.ndarray, raw_user: int, raw_items: np.ndarray) -> np.ndarray:
-    if np.isnan(scores).any() or np.isposinf(scores).any():
-        raise ValueError("Nonfinite prediction other than explicitly unsupported -inf")
-    valid = np.flatnonzero(np.isfinite(scores))
-    return valid[
-        np.lexsort((raw_items[valid], tie_keys(raw_user, raw_items[valid]), -scores[valid]))
-    ]
+from feed_ranker.models.recall import BPRMF
+from feed_ranker.recommendation.contracts import CandidateScope, Request, Retriever
+from feed_ranker.recommendation.ordering import (
+    ordered_positions as ordered_positions,
+)
+from feed_ranker.recommendation.ordering import (
+    tie_keys as tie_keys,
+)
 
 
 def evaluate(
@@ -60,10 +48,10 @@ def evaluate(
             "user_id": int(raw_user),
             "pool_size": len(items),
             "positives": count,
-            "train_seen": len(data.seen[u]),
-            "train_positive": len(data.positive[u]),
-            "train_negative": len(data.negative[u]),
-            "mf_supported": bool(data.supported[u]),
+            "train_seen": len(data.training.seen[u]),
+            "train_positive": len(data.training.positive[u]),
+            "train_negative": len(data.training.negative[u]),
+            "mf_supported": bool(data.training.supported[u]),
         }
         for m in (20, 50, 100):
             candidates = order[:m]
@@ -105,3 +93,35 @@ def evaluate(
         "ordering": "ranker" if rank_scores is not None else "retrieval",
     }
     return summary, frame, selected
+
+
+def score_pool(
+    retriever: Retriever, queries: Iterable[tuple[Request, CandidateScope]]
+) -> np.ndarray:
+    """Offline reference in scope order; omitted IDs are -inf, never fabricated negatives."""
+    parts = []
+    for request, scope in queries:
+        result = retriever.retrieve(request, scope, len(scope.items))
+        positions = pd.Index(scope.items).get_indexer(result.candidates.items)
+        if (positions < 0).any() or len(positions) != result.supported_count:
+            raise ValueError("Retriever returned inconsistent full-pool support")
+        scores = np.full(len(scope.items), -np.inf, dtype=np.float64)
+        scores[positions] = result.candidates.scores
+        parts.append(scores)
+    return np.concatenate(parts) if parts else np.empty(0, dtype=np.float64)
+
+
+@torch.no_grad()
+def pool_scores(model: BPRMF, data: RecallData) -> np.ndarray:
+    model.eval()
+    scores = np.empty(len(data.pools.items), dtype=np.float32)
+    for start in range(0, len(scores), 32768):
+        stop = min(start + 32768, len(scores))
+        users = torch.from_numpy(data.pools.users[start:stop])
+        items = torch.from_numpy(data.pools.items[start:stop])
+        scores[start:stop] = model.score_pairs(users, items).numpy()
+    allowed = (
+        data.training.supported[data.pools.users] & model.item_updated.numpy()[data.pools.items]
+    )
+    scores[~allowed] = -np.inf
+    return scores

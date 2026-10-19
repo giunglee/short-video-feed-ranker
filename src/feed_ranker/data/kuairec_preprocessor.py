@@ -19,7 +19,6 @@ import numpy as np
 import pandas as pd
 
 from feed_ranker.artifacts import sha256
-from feed_ranker.data.config import FeatureSpec
 from feed_ranker.data.schema import (
     KEYS,
     LABEL,
@@ -28,6 +27,8 @@ from feed_ranker.data.schema import (
     KuaiRecInstance,
     validate_ids,
 )
+from feed_ranker.features.config import FeatureSpec
+from feed_ranker.features.kuairec import duration_band
 
 
 def split_pairs(frame: pd.DataFrame, seed: int, val_ratio: float) -> np.ndarray:
@@ -299,16 +300,6 @@ class KuaiRecPreprocessor:
 
 
 # Internal value validation and transformations.
-
-
-def duration_band(values: pd.Series) -> pd.Series:
-    """Fixed duration bins in milliseconds; boundaries match the descriptive EDA."""
-    return pd.cut(
-        values,
-        [0, 5000, 10000, 20000, 40000, 60000, np.inf],
-        labels=["0–5s", "5–10s", "10–20s", "20–40s", "40–60s", ">60s"],
-        include_lowest=True,
-    ).astype("string")
 
 
 def _to_float32(values: pd.Series, name: str, fill_missing: bool = False) -> pd.Series:

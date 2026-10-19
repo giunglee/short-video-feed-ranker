@@ -19,7 +19,7 @@ from torch import nn
 
 from feed_ranker.artifacts import save_checkpoint, write_json
 from feed_ranker.data.schema import RecommendationBatch
-from feed_ranker.training.evaluation import predict_regression
+from feed_ranker.evaluation.ranking import predict_regression
 from feed_ranker.training.optimizer import OptimizerConfig, build_optimizer
 
 

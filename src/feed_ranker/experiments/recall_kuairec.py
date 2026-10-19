@@ -15,8 +15,10 @@ from torch.nn import functional as F
 
 from feed_ranker.artifacts import collect_run_provenance, save_checkpoint, sha256, write_json
 from feed_ranker.data.recall import RecallData
-from feed_ranker.models.recall import BPRMF, ObservedSampler, baseline_scores
-from feed_ranker.training.recall_evaluation import evaluate
+from feed_ranker.evaluation.kuairec import ObservedBenchmark
+from feed_ranker.evaluation.retrieval import evaluate, pool_scores, score_pool
+from feed_ranker.models.recall import BPRMF
+from feed_ranker.training.recall import ObservedSampler, fit_baseline
 
 
 def export(data: RecallData, scores: np.ndarray, output: Path) -> dict[str, Any]:
@@ -77,14 +79,18 @@ def run(
     if method != "mf":
         if resume:
             raise ValueError("Only MF supports resume")
-        scores, support = baseline_scores(data, method)
+        retriever = fit_baseline(data.training, method, sha256(output / "config.json"))
+        scores = score_pool(retriever, ObservedBenchmark(data))
+        support = {
+            "items_with_positive_support": len(np.unique(np.concatenate(data.training.positive)))
+        }
         summary = export(data, scores, output)
         summary["support"] = support
     else:
         model = BPRMF(len(data.users), len(data.items))
         # reasonable defaults, not from any specific production config
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.0001)
-        sampler = ObservedSampler(data, negative_policy)
+        sampler = ObservedSampler(data.training, negative_policy)
         history = []
         first_epoch, best, best_epoch = 0, -1.0, 0
         if resume:
@@ -120,7 +126,7 @@ def run(
                 gradient_total += grad
                 steps += 1
             training_seconds = time.monotonic() - tick
-            scores = model.pool_scores(data)
+            scores = pool_scores(model, data)
             measured, _, _ = evaluate(data, scores)
             value = measured["metrics"]["recall@50"]
             if value is None:
@@ -186,7 +192,7 @@ def run(
             )
         selected = torch.load(output / "best.pt", weights_only=True)
         model.load_state_dict(selected["model"])
-        summary = export(data, model.pool_scores(data), output)
+        summary = export(data, pool_scores(model, data), output)
         summary.update(
             {
                 "selected_epoch": selected["epoch"],
