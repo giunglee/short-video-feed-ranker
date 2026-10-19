@@ -96,6 +96,20 @@ def load_ranker(directory: Path) -> LoadedRanker:
         raise ValueError("Expected a ranking artifact")
     state = _state(directory)
     spec = ModelSpec(**state["model_spec"])
+    categories = None
+    if "category_items" in state or "item_categories" in state:
+        if not {"category_items", "item_categories"} <= state.keys():
+            raise ValueError("Incomplete item category state")
+        ids, codes = state["category_items"], state["item_categories"]
+        if (
+            ids.ndim != 1
+            or codes.ndim != 2
+            or len(ids) != len(codes)
+            or codes.dtype != torch.int64
+            or (codes < -1).any()
+        ):
+            raise ValueError("Invalid item category state")
+        categories = pd.Series([tuple(v[v >= 0].tolist()) for v in codes], index=ids.numpy())
     features = KuaiRecFeatureBuilder(
         FeatureConfig.from_dict(state["feature_config"]),
         state["vocab"],
@@ -105,6 +119,7 @@ def load_ranker(directory: Path) -> LoadedRanker:
         ),
         pd.Series(state["durations"].numpy(), index=state["duration_items"].numpy()),
         state["crosses"],
+        categories,
     )
     # Initialization is overwritten by saved weights and must not perturb caller RNG.
     with torch.random.fork_rng(devices=[]):

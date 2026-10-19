@@ -14,6 +14,8 @@
    feed the frozen capped Deep ranker. Five matched seeds preserve recall candidates
    and evaluate full-pool cap-2 NDCG@10. [Results and limitations](recall_rank.md).
 
-Feature exploration and its downstream evaluation are a separate follow-up.
+5. **Deep feature study — complete:** six feature ablations with bounded confirmation;
+   [standalone and fixed-recall results](ranking_features.md). Removal of duration
+   band improved ordering and feed NDCG, with a small MAE cost.
 Historical small-matrix temporal-split conclusions are archived and do not
 establish big-to-small performance.
