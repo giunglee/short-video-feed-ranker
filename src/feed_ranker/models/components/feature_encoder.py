@@ -59,6 +59,9 @@ class EmbeddingEncoder(nn.Module):
                     f"EmbeddingFeatureConfig('{config.name}').vocab_size is None; "
                     "call FeatureConfig.apply_vocab(...) before building encoders."
                 )
+        self.pooling = {c.name: c.pooling for c in configs}
+        if any(mode not in (None, "sum") for mode in self.pooling.values()):
+            raise ValueError("Embedding pooling must be None or sum")
         self.embeddings = nn.ModuleDict(
             {
                 c.name: nn.Embedding(
@@ -77,7 +80,14 @@ class EmbeddingEncoder(nn.Module):
         for name, emb in self.embeddings.items():
             if name not in features:
                 raise ValueError(f"{name} not found in features keys {list(features.keys())}")
-            outs.append(emb(features[name].long()))
+            ids = features[name].long()
+            if self.pooling[name] == "sum":
+                if ids.ndim != 2 or (ids < -1).any():
+                    raise ValueError(f"{name}: expected [B, L] IDs with -1 padding")
+                embedded = emb(ids.clamp(min=0))
+                outs.append((embedded * ids.ge(0).unsqueeze(-1)).sum(dim=1))
+            else:
+                outs.append(emb(ids))
         return torch.cat(outs, dim=-1)
 
 
@@ -112,7 +122,7 @@ class CategoricalMainEffects(nn.Module):
 
     def __init__(self, configs: list[EmbeddingFeatureConfig]) -> None:
         super().__init__()
-        if not configs or any(c.vocab_size is None for c in configs):
+        if not configs or any(c.vocab_size is None or c.pooling is not None for c in configs):
             raise ValueError("Main effects require scalar categoricals with fitted vocabularies")
         self.coefficients = nn.ModuleDict(
             {c.name: nn.Embedding(c.vocab_size, 1, padding_idx=0) for c in configs}

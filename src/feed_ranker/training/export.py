@@ -12,7 +12,7 @@ import torch
 from torch import nn
 
 from feed_ranker.artifacts import sha256, write_json
-from feed_ranker.features.kuairec import KuaiRecFeatureBuilder
+from feed_ranker.features.kuairec import KuaiRecFeatureBuilder, pad_categories
 from feed_ranker.inference.artifacts import VERSION, ArtifactManifest, TrainingProvenance
 from feed_ranker.inference.retrievers import CooccurrenceRetriever, MFRetriever, PopularityRetriever
 from feed_ranker.models.ranking_factory import ModelSpec
@@ -41,10 +41,19 @@ def export_ranker(
     provenance: TrainingProvenance,
 ) -> None:
     """Export resolved inputs with their model; no experiment preset is interpreted."""
+    category_state = {}
+    if features.item_categories is not None:
+        category_state = {
+            "category_items": torch.from_numpy(
+                features.item_categories.index.to_numpy(dtype=np.int64)
+            ),
+            "item_categories": torch.from_numpy(pad_categories(features.item_categories.tolist())),
+        }
     _write(
         directory,
         "ranker",
         {
+            **category_state,
             "model_spec": asdict(spec),
             "feature_config": asdict(features.config),
             "model": {n: v.detach().cpu() for n, v in model.state_dict().items()},

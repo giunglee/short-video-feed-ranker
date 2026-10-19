@@ -110,11 +110,11 @@ alignment and metrics. The frozen Deep/cap-2/user-XAUC restrictions belong to
 mappings, including unsupported users; rebuilding a vocabulary could change which
 embedding belongs to a user.
 
-The current feature builder supports the scalar KuaiRec inputs and declared wide
-crosses used here. Sequence/category feature-study inputs require their own matching
-encoder support; this refactor does not promote those experiments or change the
-frozen feature recipe. Training event duration and candidate training-median duration
-remain distinct, explicit source policies.
+The feature builder supports scalar KuaiRec inputs, declared wide crosses and
+sum-pooled item categories through fitted item lookups. Behavior sequences require
+a separate contract. These capabilities do not change the frozen feature recipe.
+Training event duration and candidate training-median duration remain distinct,
+explicit source policies.
 
 The benchmark loads existing artifacts; it never exports or reconstructs a model.
 `--execution replay` caches their scores for repeated budget comparisons;
@@ -200,9 +200,9 @@ Do not compare one historical seed against the new five-seed mean as a matched e
 [All budgets](results/funnel_deep_ranker_comparison_seed42.csv).
 
 Keep the user-selected frozen Deep recipe as the integration reference, without
-claiming a funnel lift. Feature additions/removals and their downstream impact
-belong to a **separate experiment and PR**; they do not gate this integration.
-Channel merging and its exploratory results are also outside this PR.
+claiming a funnel lift from the architecture upgrade. A separate
+[Deep feature study](ranking_features.md) measures feature additions/removals and
+their downstream impact on these same candidates. Channel merging remains separate.
 
 ## Historical decisions
 

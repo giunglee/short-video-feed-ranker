@@ -28,6 +28,11 @@ class EmbeddingFeatureConfig:
     # Fill from meta.json via FeatureConfig.apply_vocab before building encoders
     vocab_size: int | None = None
     embedding_dim: int = 8
+    pooling: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.pooling not in (None, "sum"):
+            raise ValueError("Embedding pooling must be None or sum")
 
 
 @dataclass

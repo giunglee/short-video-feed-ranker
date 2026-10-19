@@ -31,7 +31,11 @@ from feed_ranker.training.recall import fit_baseline
 
 
 def convert_checkpoint(
-    checkpoint: Path, ranking_data: Path, duration_path: Path, directory: Path
+    checkpoint: Path,
+    ranking_data: Path,
+    duration_path: Path,
+    directory: Path,
+    resolved_features: FeatureConfig | None = None,
 ) -> None:
     """Convert architecture-study checkpoints; new checkpoints carry resolved specs."""
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
@@ -41,7 +45,25 @@ def convert_checkpoint(
     metadata = json.loads((ranking_data / "meta.json").read_text())
     if sha256(ranking_data / "train.parquet") != metadata["splits"]["train"]["sha256"]:
         raise ValueError("Prepared ranking training data changed")
-    if "feature_config" in meta and "model_spec" in meta:
+    if resolved_features is not None:
+        if "feature_config" in meta or "model_spec" in meta:
+            raise ValueError("Do not override resolved checkpoint specifications")
+        if "features" not in meta or resolved_features.embedding_cols != meta["features"]:
+            raise ValueError("Explicit features differ from legacy checkpoint order")
+        recipe = Recipe(**meta["recipe"])
+        config, spec = resolved_features, ModelSpec(recipe.architecture, recipe.hidden)
+        if config.dense_cols != metadata["spec"]["dense"] or config.cross_feature_cols:
+            raise ValueError("Explicit inputs differ from the legacy feature-study contract")
+        if any(c.embedding_dim != recipe.embedding_dim for c in config.embedding_configs):
+            raise ValueError("Explicit embedding width differs from checkpoint recipe")
+        if any(c.transform != "log1p_nonnegative" for c in config.dense_configs):
+            raise ValueError("Legacy feature study requires log1p numeric inputs")
+        if any(
+            c.pooling != ("sum" if c.name == "item_categories" else None)
+            for c in config.embedding_configs
+        ):
+            raise ValueError("Explicit pooling differs from legacy feature-study contract")
+    elif "feature_config" in meta and "model_spec" in meta:
         config, spec = (
             FeatureConfig.from_dict(meta["feature_config"]),
             ModelSpec(**meta["model_spec"]),
@@ -172,6 +194,11 @@ def main() -> None:
         rank.add_argument(f"--{name}", type=Path, required=True)
     rank.add_argument("--checkpoint-sha256", required=True)
     rank.add_argument(
+        "--feature-config",
+        type=Path,
+        help="Explicit resolved FeatureConfig for legacy feature-study checkpoints",
+    )
+    rank.add_argument(
         "--frozen-deep-trace",
         type=Path,
         help="Also enforce the historical Deep finalist and prediction parity",
@@ -196,7 +223,13 @@ def main() -> None:
     )
     hashes = verify_split_membership(RecallData(args.recall_data), args.ranking_data)
     convert_checkpoint(
-        args.checkpoint, args.ranking_data, args.recall_data / "item_duration.parquet", args.output
+        args.checkpoint,
+        args.ranking_data,
+        args.recall_data / "item_duration.parquet",
+        args.output,
+        FeatureConfig.from_dict(json.loads(args.feature_config.read_text()))
+        if args.feature_config
+        else None,
     )
     report = {
         "checkpoint_sha256": args.checkpoint_sha256,

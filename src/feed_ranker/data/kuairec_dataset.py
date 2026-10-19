@@ -91,7 +91,14 @@ class KuaiRecDataset:
     def _pack(self, frame: pd.DataFrame) -> RecommendationBatch:
         features: dict[str, torch.Tensor] = {}
         categorical = set(self.config.feature.categorical_cols)
+        pooled = {c.name for c in self.config.feature.embedding_configs if c.pooling == "sum"}
         for name in self.config.feature_cols:
+            if name in pooled:
+                sequences = [torch.tensor(v, dtype=torch.long) for v in frame[name]]
+                features[name] = torch.nn.utils.rnn.pad_sequence(
+                    sequences, batch_first=True, padding_value=-1
+                )
+                continue
             dtype = np.int64 if name in categorical else np.float32
             values = frame[name].to_numpy(dtype=dtype, copy=True)
             if not np.isfinite(values).all():

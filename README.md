@@ -34,7 +34,10 @@ pairs, and which weighting, feature, and architecture choices improve it?
 4. **Retrieval and final-feed integration — complete:** [recall methods](docs/recall_decisions.md)
    and [frozen Deep funnel evaluation](docs/recall_rank.md). MF leads the retrieval
    baselines across five matched seeds; standalone ranking gains do not guarantee
-   higher final-feed NDCG. Feature exploration is a separate follow-up.
+   higher final-feed NDCG.
+5. **Deep feature ablations — complete:** [feature results and reproduction](docs/ranking_features.md).
+   Removing duration band while retaining log duration improved user-XAUC and
+   fixed-candidate feed NDCG across five seeds, with a small MAE regression.
 
 **Limits:** the split tests pair generalization, not future-time prediction.
 Snapshot feature timing is unverified. Historical test-label inspection is
@@ -60,8 +63,7 @@ explicitly disclosed. This repository studies offline modeling, not online servi
 
 ## Future directions
 
-- **Next:** controlled feature exploration with standalone and recall-to-rank metrics;
-  channel-merging experiments remain separate from the frozen baseline.
+- **Next:** channel-merging experiments, separate from the frozen ranking comparisons.
 - **Later:** multi-task ranking, DIN/SASRec-style behavior modeling, graph-based
   recommendation, and incremental-value modeling.
 - These are research directions, not implemented capabilities. Each becomes an
