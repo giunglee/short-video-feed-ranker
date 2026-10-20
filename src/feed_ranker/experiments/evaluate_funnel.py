@@ -18,11 +18,13 @@ import torch
 
 from feed_ranker.artifacts import collect_run_provenance, sha256, write_json
 from feed_ranker.data.recall import RecallData
+from feed_ranker.evaluation.channels import candidate_recall
 from feed_ranker.evaluation.funnel import FunnelEvaluator
 from feed_ranker.evaluation.kuairec import ObservedBenchmark, verify_split_membership
 from feed_ranker.evaluation.retrieval import evaluate as evaluate_binary
 from feed_ranker.evaluation.retrieval import score_pool
 from feed_ranker.inference.artifacts import ArtifactManifest, load_ranker, load_retriever
+from feed_ranker.inference.channels import ChannelRetriever
 from feed_ranker.inference.replay import ReplayRanker, ReplayRetriever, ScoreTable
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
 from feed_ranker.recommendation.traces import RecommendationTrace
@@ -36,6 +38,9 @@ def run(
     output: Path,
     threads: int = 1,
     execution: str = "replay",
+    merge_policy: str | None = None,
+    anchor: str = "mf",
+    anchor_fraction: float = 0.8,
 ) -> dict[str, Any]:
     if output.exists():
         raise FileExistsError(output)
@@ -73,6 +78,13 @@ def run(
         for name in ("manifest.json", "state.pt"):
             hashes[str(directory / name)] = sha256(directory / name)
 
+    # Validate composition before writing output or scoring the benchmark.
+    composition = (
+        ChannelRetriever(retrievers, merge_policy, anchor=anchor, anchor_fraction=anchor_fraction)
+        if merge_policy is not None
+        else None
+    )
+
     queries = ObservedBenchmark(data)
     evaluator = FunnelEvaluator(queries.pool)
     users = data.users[data.pools.users]
@@ -91,7 +103,7 @@ def run(
     pd.DataFrame({"user_id": users, "video_id": queries.items, "score": scores}).to_parquet(
         output / "rank_predictions.parquet", index=False
     )
-    reports = {}
+    reports, active_retrievers = {}, []
     for retriever in retrievers:
         method = retriever.name
         recall_scores = score_pool(retriever, queries)
@@ -110,19 +122,35 @@ def run(
         )
         binary, _, _ = evaluate_binary(data, recall_scores)
         reports[method] = {"binary": binary, "budgets": {}}
+        active_retrievers.append(active_retriever)
+    if composition is not None:
+        merged = ChannelRetriever(
+            active_retrievers, merge_policy, anchor=anchor, anchor_fraction=anchor_fraction
+        )
+        active_retrievers.append(merged)
+        artifact_ids[merged.name] = merged.artifact_id
+        reports[merged.name] = {"composition": merged.config, "budgets": {}}
+    for active_retriever in active_retrievers:
+        method = active_retriever.name
         for m in (20, 50, 100):
             pipeline = RecommendationPipeline(
                 active_retriever, active_ranker, budget=m, k=queries.pool.k
             )
             results = [pipeline.recommend(request, scope) for request, scope in queries]
             report = evaluator.evaluate(results)
+            recall = candidate_recall(queries.pool, data.pools.relevant, results)
+            per_user = report.per_user.merge(recall, on="user_id", validate="one_to_one")
+            report.metrics["binary_recall"] = (
+                float(recall.binary_recall.mean()) if recall.positives.gt(0).any() else None
+            )
+            report.metrics["users_zero_positive"] = int(recall.positives.eq(0).sum())
             report.metrics["fraction_prediction_gt2"] = float((scores > 2).mean())
-            report.per_user.insert(
-                len(report.per_user.columns) - 2,
+            per_user.insert(
+                len(per_user.columns) - 2,
                 "positive_history",
                 [len(v) for v in data.training.positive],
             )
-            report.per_user.to_parquet(output / f"{method}_m{m}_per_user.parquet", index=False)
+            per_user.to_parquet(output / f"{method}_m{m}_per_user.parquet", index=False)
             reports[method]["budgets"][str(m)] = report.metrics
             RecommendationTrace.from_results(results).write(output / f"{method}_m{m}")
             if m == 50:
@@ -168,6 +196,9 @@ def main() -> None:
     parser.add_argument("--retrievers", type=Path, nargs="+", required=True)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--execution", choices=("replay", "model"), default="replay")
+    parser.add_argument("--merge-policy", choices=("round_robin", "rrf", "anchored"))
+    parser.add_argument("--anchor", default="mf")
+    parser.add_argument("--anchor-fraction", type=float, default=0.8)
     args = parser.parse_args()
     run(
         args.data,
@@ -177,6 +208,9 @@ def main() -> None:
         args.output,
         args.threads,
         args.execution,
+        args.merge_policy,
+        args.anchor,
+        args.anchor_fraction,
     )
 
 

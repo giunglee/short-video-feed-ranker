@@ -38,6 +38,8 @@ pairs, and which weighting, feature, and architecture choices improve it?
 5. **Deep feature ablations — complete:** [feature results and reproduction](docs/ranking_features.md).
    Removing duration band while retaining log duration improved user-XAUC and
    fixed-candidate feed NDCG across five seeds, with a small MAE regression.
+6. **Channel merging — exploratory:** [reusable composition and findings](docs/recall_channels.md).
+   MF-heavy allocation reduces merging losses; MF alone remains the quality reference.
 
 **Limits:** the split tests pair generalization, not future-time prediction.
 Snapshot feature timing is unverified. Historical test-label inspection is
