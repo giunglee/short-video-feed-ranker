@@ -124,8 +124,9 @@ offline reference. Candidate traces retain source rank, both scores and final ra
 a separate request trace retains artifact identities and shortfalls even when no
 candidates were returned. Labels and duration cohorts stay in evaluation reports.
 
-This version runs one retrieval channel at a time. Multi-channel allocation and
-merging remain a separate change. Exact cooccurrence retains a quadratic item
+MF remains the retained single-retriever reference. Optional
+[channel composition](recall_channels.md) uses the same execution interface and
+evaluator; current exploratory merges do not improve on MF. Exact cooccurrence retains a quadratic item
 similarity matrix suited to this bounded catalog; the refactor does not establish
 large-catalog memory/latency suitability. Observed-pool results are not full-catalog
 recommendation estimates.
@@ -202,7 +203,8 @@ Do not compare one historical seed against the new five-seed mean as a matched e
 Keep the user-selected frozen Deep recipe as the integration reference, without
 claiming a funnel lift from the architecture upgrade. A separate
 [Deep feature study](ranking_features.md) measures feature additions/removals and
-their downstream impact on these same candidates. Channel merging remains separate.
+their downstream impact on these same candidates. The separate
+[channel-merging study](recall_channels.md) retains the original frozen ranker.
 
 ## Historical decisions
 
@@ -273,8 +275,9 @@ python -m feed_ranker.experiments.evaluate_funnel \
   --output artifacts/funnel_seed42 --threads 1
 ```
 
-Pass multiple retrieval artifact directories to compare them separately; this does
-not merge channels. Add `--execution model` for selected-candidate model execution.
+Pass multiple retrieval artifact directories to compare them separately. Add
+`--merge-policy anchored`, `round_robin` or `rrf` to also evaluate their composition.
+MF-only execution is unchanged. Add `--execution model` for selected-candidate model execution.
 Evaluation still verifies the exact train/validation pair membership against the
 ranking preparation. Runtime inference itself only needs the artifact directories.
 Outputs include per-user metrics, duration diagnostics, request/candidate traces,

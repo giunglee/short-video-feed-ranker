@@ -253,6 +253,30 @@ class DeepFunnelTests(unittest.TestCase):
             packed = np.load(root / "out/mf_m20_candidates.npz")
             np.testing.assert_array_equal(packed["items"][:, :2], [[300, 400], [100, 200]])
             self.assertTrue((packed["items"][:, 2:] == -1).all())
+            for policy in ("round_robin", "rrf", "anchored"):
+                replay = run(
+                    recall, ranking, artifact, retrievers, root / policy, merge_policy=policy
+                )
+                model = run(
+                    recall,
+                    ranking,
+                    artifact,
+                    retrievers,
+                    root / f"{policy}-model",
+                    execution="model",
+                    merge_policy=policy,
+                )
+                self.assertEqual(replay["methods"], model["methods"])
+                name = f"{policy}:cooccurrence+mf+popularity"
+                self.assertEqual(replay["methods"]["mf"], result["methods"]["mf"])
+                self.assertEqual(replay["methods"][name]["budgets"]["50"]["binary_recall"], 1)
+                self.assertEqual(
+                    replay["methods"][name]["composition"]["source_depth"],
+                    "full_supported_scope",
+                )
+                cached = np.load(root / policy / f"{name}_m50_candidates.npz")
+                executed = np.load(root / f"{policy}-model" / f"{name}_m50_candidates.npz")
+                np.testing.assert_array_equal(cached["items"], executed["items"])
             with self.assertRaisesRegex(ValueError, "frozen finalist"):
                 FrozenDeepReference.read(artifact / "state.pt", "wrong")
             # No test dataset exists: validation-only operation is an enforced fixture property.
