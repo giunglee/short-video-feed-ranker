@@ -56,8 +56,8 @@ class TrainConfig:
         self.metrics = tuple(self.metrics)
         if self.weighting not in ("event", "pair"):
             raise ValueError("weighting must be event or pair")
-        if self.loss not in ("mae", "mse", "smooth_l1"):
-            raise ValueError("loss must be mae, mse, or smooth_l1")
+        if self.loss not in ("mae", "mse", "smooth_l1", "bce_logits"):
+            raise ValueError("loss must be mae, mse, smooth_l1, or bce_logits")
         if (
             not self.metrics
             or len(set(self.metrics)) != len(self.metrics)

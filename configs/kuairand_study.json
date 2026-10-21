@@ -1,0 +1,13 @@
+{
+  "version": "kuairand-strict-screen-v1",
+  "description": "Seven one-factor recipes; all share data, recall candidates and training budget.",
+  "recipes": [
+    {"name": "reference", "hidden": [64, 32], "features": "base"},
+    {"name": "width_small", "hidden": [32, 16], "features": "base"},
+    {"name": "width_large", "hidden": [128, 64], "features": "base"},
+    {"name": "remove_user", "hidden": [64, 32], "features": "no_user"},
+    {"name": "remove_item", "hidden": [64, 32], "features": "no_item"},
+    {"name": "remove_duration", "hidden": [64, 32], "features": "no_duration"},
+    {"name": "add_duration_band", "hidden": [64, 32], "features": "duration_band"}
+  ]
+}
