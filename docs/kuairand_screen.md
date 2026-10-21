@@ -1,5 +1,9 @@
 # WIP: KuaiRand recall → Deep baseline review
 
+**Follow-up reading:** [data analysis and protocol discussion](kuairand_data_review.md)
+expands the tab/label/feature audit and proposes train/validation/final-evaluation
+boundaries. Those proposals do not change this completed screen's protocol.
+
 **Status:** implementation and the first full-1K screen are complete. Model selection
 remains open. This is a single-seed exploration, not a final evaluation.
 

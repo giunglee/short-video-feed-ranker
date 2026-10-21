@@ -2,6 +2,8 @@
 
 Start with the [WIP findings and review questions](kuairand_screen.md) for the
 completed seed-42 screen. This page covers setup and implementation contracts.
+For the reasoning behind each choice and the open decisions, read the
+[data and protocol discussion](kuairand_data_review.md).
 
 The KuaiRand study reuses `RecommendationPipeline`, its request/response contracts,
 `ModelRanker`, the popularity and MF retrievers, `Trainer`, and the Deep model factory.
