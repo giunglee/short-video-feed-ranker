@@ -1,5 +1,8 @@
 # WIP: KuaiRand recall → Deep baseline review
 
+**Follow-up:** see [matched-seed merging, side features and anonymous-feature ablation](kuairand_confirmation.md). The five-epoch results below retain their original protocol.
+
+
 **Follow-up reading:** [data analysis and protocol discussion](kuairand_data_review.md)
 expands the tab/label/feature audit and proposes train/validation/final-evaluation
 boundaries. Those proposals do not change this completed screen's protocol.

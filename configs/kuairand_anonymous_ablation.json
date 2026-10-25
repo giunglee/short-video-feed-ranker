@@ -1,0 +1,7 @@
+{
+  "version": "kuairand-side-study-v1",
+  "description": "Missing leave-one-group-out arm: combined author and basic-duration features without anonymous user fields. Compare with frozen combined recipes at matched seeds and budget.",
+  "recipes": [
+    {"name": "author_duration", "hidden": [64, 32], "features": "band_author_duration"}
+  ]
+}

@@ -45,6 +45,23 @@ def binary_metrics(labels: np.ndarray, logits: np.ndarray) -> dict[str, Any]:
     }
 
 
+def user_auc_metrics(users: np.ndarray, labels: np.ndarray, logits: np.ndarray) -> dict[str, Any]:
+    """Equal-user ROC AUC; exclude one-class users and expose their count."""
+    if users.shape != labels.shape or labels.shape != logits.shape:
+        raise ValueError("Require aligned user IDs, labels and logits")
+    frame = pd.DataFrame({"user": users, "label": labels, "logit": logits})
+    aucs = []
+    for _, group in frame.groupby("user", sort=False):
+        value = binary_metrics(group.label.to_numpy(), group.logit.to_numpy())["roc_auc"]
+        if value is not None:
+            aucs.append(value)
+    return {
+        "macro_user_auc": float(np.mean(aucs)) if aucs else None,
+        "users_with_both_classes": len(aucs),
+        "users_all": int(frame.user.nunique()),
+    }
+
+
 @torch.no_grad()
 def predict_binary(
     model: nn.Module,

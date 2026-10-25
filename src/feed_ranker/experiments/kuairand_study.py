@@ -29,11 +29,19 @@ from feed_ranker.data.kuairand import (
     load_prepared,
     prepare,
 )
-from feed_ranker.evaluation.binary import BinaryEvaluator, binary_metrics, predict_binary
+from feed_ranker.evaluation.binary import (
+    BinaryEvaluator,
+    binary_metrics,
+    predict_binary,
+    user_auc_metrics,
+)
 from feed_ranker.evaluation.kuairand import WindowBenchmark
 from feed_ranker.features.kuairand import FEATURE_SETS, KuaiRandFeatures
+from feed_ranker.features.kuairand_metadata import MetadataEncoding
 from feed_ranker.inference.kuairand import SparseCooccurrenceRetriever, load_ranker
+from feed_ranker.inference.merged import MergedRetriever
 from feed_ranker.inference.rankers import ModelRanker
+from feed_ranker.inference.replay import ReplayRetriever, ScoreTable
 from feed_ranker.inference.retrievers import MFRetriever, PopularityRetriever
 from feed_ranker.models.ranking_factory import ModelSpec, build_model
 from feed_ranker.models.sparse_cooccurrence import SparseCosineCooccurrence
@@ -46,7 +54,7 @@ from feed_ranker.training.trainer import TrainConfig, Trainer
 
 def read_recipes(path: Path, selected: list[str] | None) -> list[dict[str, Any]]:
     config = json.loads(path.read_text())
-    if config["version"] != "kuairand-strict-screen-v1":
+    if config["version"] not in ("kuairand-strict-screen-v1", "kuairand-side-study-v1"):
         raise ValueError("Unsupported study recipe version")
     recipes = config["recipes"]
     names = [r["name"] for r in recipes]
@@ -64,6 +72,14 @@ def read_recipes(path: Path, selected: list[str] | None) -> list[dict[str, Any]]
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    # Defaults preserve the historical logloss screen for existing callers.
+    args.selection_metric = getattr(args, "selection_metric", "logloss")
+    args.resume_from = getattr(args, "resume_from", None)
+    args.recall_from = getattr(args, "recall_from", None)
+    args.side_features = getattr(args, "side_features", None)
+    args.include_merges = getattr(args, "include_merges", False)
+    if args.selection_metric not in ("logloss", "roc_auc"):
+        raise ValueError("Selection metric must be logloss or roc_auc")
     if min(args.epochs, args.mf_epochs, args.batch_size, args.threads, args.budget) < 1:
         raise ValueError("Budgets and threads must be positive")
     if (
@@ -73,6 +89,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise ValueError("Require distinct training seeds")
     recipes = read_recipes(args.config, args.recipes)
+    if args.resume_from is not None:
+        previous = {r["name"]: r for r in read_recipes(args.resume_from / "recipes.json", None)}
+        if any(previous.get(r["name"]) != r for r in recipes):
+            raise ValueError("Continuation requires identical feature/model recipes")
     torch.set_num_threads(args.threads)
     args.out.mkdir(parents=True, exist_ok=False)
     write_json(
@@ -89,8 +109,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     train, val, encoding, manifest = load_prepared(args.data)
     label = manifest["label"]
     manifest_hash = sha256(args.data / "manifest.json")
+    metadata, metadata_hash = None, None
+    if args.side_features is not None:
+        fitted = torch.load(args.side_features, weights_only=True)
+        if fitted["data_manifest_sha256"] != manifest_hash:
+            raise ValueError("Metadata fitted to different training data")
+        metadata = MetadataEncoding.from_state(fitted["encoding"])
+        metadata_hash = sha256(args.side_features)
+        write_json(args.out / "feature_assumptions.json", fitted["manifest"])
     write_json(args.out / "data_manifest.json", manifest)
-    positive, negative = histories(train, encoding, label)
     benchmark = WindowBenchmark(
         val,
         encoding.items,
@@ -98,7 +125,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         manifest["train_end_exclusive_ms"],
         manifest["val_end_exclusive_ms"],
     )
-    cooc = SparseCosineCooccurrence(positive, len(encoding.items))
+    if args.recall_from is None:
+        positive, negative = histories(train, encoding, label)
+        cooc = SparseCosineCooccurrence(positive, len(encoding.items))
     prior = float(np.clip(train[label].mean(), 1e-7, 1 - 1e-7))
     prior_metrics = binary_metrics(
         val[label].to_numpy(), np.full(len(val), np.log(prior / (1 - prior)))
@@ -107,51 +136,29 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     for seed in args.seeds:
         seed_dir = args.out / f"seed{seed}"
         seed_dir.mkdir()
-        start = time.monotonic()
-        mf, supported, _ = fit_mf(
-            positive, negative, encoding, epochs=args.mf_epochs, seed=seed, out=seed_dir
-        )
-        mf_seconds = time.monotonic() - start
-        # Fitted graph state is independent of labels at inference and sufficient to rebuild both baselines.
-        np.savez(
-            seed_dir / "recall_state.npz",
-            users=encoding.users,
-            items=encoding.items,
-            positive_offsets=np.r_[0, np.cumsum([len(p) for p in positive])],
-            positive_items=np.concatenate(positive),
-            supported=supported,
-        )
-        retrievers = [
-            PopularityRetriever(encoding.items, cooc.counts, manifest_hash + ":popularity"),
-            SparseCooccurrenceRetriever(
-                encoding.users, encoding.items, cooc, manifest_hash + ":cosine-exact"
-            ),
-            MFRetriever(mf, encoding.users, encoding.items, supported, sha256(seed_dir / "mf.pt")),
-        ]
-        cache_start = time.monotonic()
-        cached = [benchmark.cache(r, seed_dir / f"{r.name}_scores.parquet") for r in retrievers]
-        write_json(
-            seed_dir / "retrieval.json",
-            {
-                "mf_seconds": mf_seconds,
-                "cache_seconds": time.monotonic() - cache_start,
-                "cooccurrence_storage_bytes": cooc.storage_bytes,
-                "dense_item_matrix_bytes_avoided": len(encoding.items) ** 2 * 4,
-                "mf_supported_users": int(supported.sum()),
-                "mf_checkpoint_policy": "fixed final epoch",
-                "data_manifest_sha256": manifest_hash,
-                "coverage": benchmark.coverage,
-                "files": {p.name: sha256(p) for p in seed_dir.iterdir() if p.is_file()},
-            },
-        )
-        del mf, retrievers
-        gc.collect()
+        if args.recall_from is not None:
+            cached = reuse_recall(args.recall_from, seed_dir, seed, manifest_hash, args.mf_epochs)
+        else:
+            cached = fit_recall(
+                seed_dir,
+                seed,
+                args.mf_epochs,
+                positive,
+                negative,
+                encoding,
+                cooc,
+                manifest_hash,
+                benchmark,
+            )
+        if args.include_merges:
+            sources = list(cached)
+            cached.extend(MergedRetriever(sources, policy, 50) for policy in ("rr_all", "rrf_all"))
         for recipe in recipes:
             started = time.monotonic()
             directory = seed_dir / recipe["name"]
-            features = KuaiRandFeatures(encoding, recipe["features"])
+            features = KuaiRandFeatures(encoding, recipe["features"], metadata)
             train_data, val_data = [
-                EventDataset(f, encoding, label, recipe["features"]) for f in [train, val]
+                EventDataset(f, encoding, label, recipe["features"], metadata) for f in [train, val]
             ]
             torch.manual_seed(seed)
             model = build_model(features.config, ModelSpec("deep", tuple(recipe["hidden"])))
@@ -161,8 +168,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 seed=seed,
                 train_eval_rows=0,
                 loss="bce_logits",
-                metrics=("logloss",),
-                selection_metric="logloss",
+                metrics=("logloss", "roc_auc"),
+                selection_metric=args.selection_metric,
+                selection_mode="max" if args.selection_metric == "roc_auc" else "min",
                 optimizer=OptimizerConfig(lr=0.001),
             )
             evaluator = BinaryEvaluator(lambda data=val_data: data.batches(8192))
@@ -186,7 +194,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "use_ids": recipe["features"] not in ("no_user", "no_item"),
                     "feature_set": recipe["features"],
                     "feature_config": asdict(features.config),
+                    "side_features_sha256": metadata_hash
+                    if features.metadata is not None
+                    else None,
                 },
+                resume_from=(
+                    args.resume_from / f"seed{seed}" / recipe["name"]
+                    if args.resume_from is not None
+                    else None
+                ),
             )
             result["exploratory"] = True
             write_json(directory / "result.json", result)
@@ -196,13 +212,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             warm = pd.Index(encoding.items).get_indexer(val.video_id) >= 0
             cohorts = {
-                name: binary_metrics(labels[mask], logits[mask])
-                for name, mask in [("warm_item", warm), ("cold_item", ~warm)]
+                name: {
+                    **binary_metrics(labels[mask], logits[mask]),
+                    **user_auc_metrics(val.user_id.to_numpy()[mask], labels[mask], logits[mask]),
+                }
+                for name, mask in [
+                    ("all", np.ones(len(val), dtype=bool)),
+                    ("warm_item", warm),
+                    ("cold_item", ~warm),
+                ]
                 if mask.any()
             }
             artifact = directory / "inference.pt"
             export_ranker(
-                artifact, model, encoding, recipe["features"], recipe["hidden"], manifest_hash
+                artifact,
+                model,
+                encoding,
+                recipe["features"],
+                recipe["hidden"],
+                manifest_hash,
+                features.metadata,
             )
             ranker = load_ranker(artifact)
             expected = (
@@ -238,27 +267,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             write_json(args.out / "runs.json", results)
             del trainer, model, ranker, train_data, val_data
             gc.collect()
-    # Seeds remain explicit; singleton screens have no sample-SD estimate.
     aggregates = []
     for recipe in recipes:
         rows = [r for r in results if r["recipe"] == recipe["name"]]
-        values = np.array([r["ranker"]["val"]["logloss"] for r in rows])
-        paired = []
-        for r in rows:
-            reference = next(
-                (b for b in results if b["recipe"] == "reference" and b["seed"] == r["seed"]), None
+        entry = {"recipe": recipe["name"], "seeds": [r["seed"] for r in rows]}
+        for metric in ("logloss", "roc_auc"):
+            values = np.array([r["ranker"]["val"][metric] for r in rows])
+            paired = []
+            for r in rows:
+                reference = next(
+                    (b for b in results if b["recipe"] == "reference" and b["seed"] == r["seed"]),
+                    None,
+                )
+                if reference:
+                    paired.append(r["ranker"]["val"][metric] - reference["ranker"]["val"][metric])
+            entry.update(
+                {
+                    f"{metric}_mean": float(values.mean()),
+                    f"{metric}_sample_sd": float(values.std(ddof=1)) if len(values) > 1 else None,
+                    f"paired_{metric}_deltas_vs_reference": paired,
+                }
             )
-            if reference:
-                paired.append(r["ranker"]["val"]["logloss"] - reference["ranker"]["val"]["logloss"])
-        aggregates.append(
-            {
-                "recipe": recipe["name"],
-                "seeds": [r["seed"] for r in rows],
-                "logloss_mean": float(values.mean()),
-                "logloss_sample_sd": float(values.std(ddof=1)) if len(values) > 1 else None,
-                "paired_logloss_deltas_vs_reference": paired,
-            }
-        )
+        aggregates.append(entry)
     summary = {
         "scope": f"exploratory temporal {label} screen; observed warm candidates, repeats eligible",
         "data_manifest_sha256": manifest_hash,
@@ -270,10 +300,106 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "prior_baseline": prior_metrics,
         "aggregates": aggregates,
         "runs": results,
+        "selection_metric": args.selection_metric,
         "selection": "No automatic promotion; review curves and cohorts before confirmation",
     }
     write_json(args.out / "summary.json", summary)
     return summary
+
+
+def reuse_recall(
+    source: Path,
+    destination: Path,
+    seed: int,
+    manifest_hash: str,
+    mf_epochs: int,
+) -> list[ReplayRetriever]:
+    """Reuse only hash-verified retrieval artifacts from the same data and seed."""
+    config = json.loads((source / "config.json").read_text())
+    if seed not in config["seeds"] or config["mf_epochs"] != mf_epochs:
+        raise ValueError("Recall seed or training budget differs")
+    directory = source / f"seed{seed}"
+    evidence = json.loads((directory / "retrieval.json").read_text())
+    if evidence["data_manifest_sha256"] != manifest_hash:
+        raise ValueError("Recall data manifest differs")
+    required = {
+        "mf.pt",
+        "mf_history.json",
+        "recall_state.npz",
+        "popularity_scores.parquet",
+        "cooccurrence_scores.parquet",
+        "mf_scores.parquet",
+    }
+    if set(evidence["files"]) != required:
+        raise ValueError("Incomplete recall artifact manifest")
+    for name, digest in evidence["files"].items():
+        if sha256(directory / name) != digest:
+            raise ValueError(f"Recall artifact hash mismatch: {name}")
+        shutil.copy2(directory / name, destination / name)
+    evidence["reused_from"] = str(source.resolve())
+    write_json(destination / "retrieval.json", evidence)
+    return [
+        ReplayRetriever(
+            name,
+            ScoreTable(
+                pd.read_parquet(destination / f"{name}_scores.parquet"),
+                evidence["files"][f"{name}_scores.parquet"],
+                allow_unsupported=True,
+            ),
+        )
+        for name in ("popularity", "cooccurrence", "mf")
+    ]
+
+
+def fit_recall(
+    seed_dir: Path,
+    seed: int,
+    epochs: int,
+    positive: list[np.ndarray],
+    negative: list[np.ndarray],
+    encoding: Any,
+    cooc: SparseCosineCooccurrence,
+    manifest_hash: str,
+    benchmark: WindowBenchmark,
+) -> list[ReplayRetriever]:
+    start = time.monotonic()
+    mf, supported, _ = fit_mf(positive, negative, encoding, epochs=epochs, seed=seed, out=seed_dir)
+    mf_seconds = time.monotonic() - start
+    # Fitted graph state is independent of labels at inference and sufficient to rebuild both baselines.
+    np.savez(
+        seed_dir / "recall_state.npz",
+        users=encoding.users,
+        items=encoding.items,
+        positive_offsets=np.r_[0, np.cumsum([len(p) for p in positive])],
+        positive_items=np.concatenate(positive),
+        supported=supported,
+    )
+    retrievers = [
+        PopularityRetriever(encoding.items, cooc.counts, manifest_hash + ":popularity"),
+        SparseCooccurrenceRetriever(
+            encoding.users, encoding.items, cooc, manifest_hash + ":cosine-exact"
+        ),
+        MFRetriever(mf, encoding.users, encoding.items, supported, sha256(seed_dir / "mf.pt")),
+    ]
+    cache_start = time.monotonic()
+    cached = [benchmark.cache(r, seed_dir / f"{r.name}_scores.parquet") for r in retrievers]
+    write_json(
+        seed_dir / "retrieval.json",
+        {
+            "mf_seconds": mf_seconds,
+            "cache_seconds": time.monotonic() - cache_start,
+            "cooccurrence_storage_bytes": cooc.storage_bytes,
+            "dense_item_matrix_bytes_avoided": len(encoding.items) ** 2 * 4,
+            "mf_supported_users": int(supported.sum()),
+            "mf_checkpoint_policy": "fixed final epoch",
+            "data_manifest_sha256": manifest_hash,
+            "coverage": benchmark.coverage,
+            "files": {p.name: sha256(p) for p in seed_dir.iterdir() if p.is_file()},
+        },
+    )
+    del mf, retrievers
+    gc.collect()
+    return cached
 
 
 def main() -> None:
@@ -295,6 +421,17 @@ def main() -> None:
         default=Path(__file__).resolve().parents[3] / "configs/kuairand_study.json",
     )
     study.add_argument("--recipes", nargs="+")
+    study.add_argument("--selection-metric", choices=("logloss", "roc_auc"), default="logloss")
+    study.add_argument("--resume-from", type=Path, help="Prior study; only epoch cap may change")
+    study.add_argument("--recall-from", type=Path, help="Reuse verified frozen recall artifacts")
+    study.add_argument(
+        "--side-features", type=Path, help="Frozen metadata lookup with training-only vocabularies"
+    )
+    study.add_argument(
+        "--include-merges",
+        action="store_true",
+        help="Also evaluate fixed top50-source RR and RRF60",
+    )
     # reasonable defaults, not from any specific production config
     study.add_argument("--seeds", type=int, nargs="+", default=[42])
     study.add_argument("--epochs", type=int, default=5)

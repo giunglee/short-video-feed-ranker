@@ -1,0 +1,11 @@
+{
+  "version": "kuairand-side-study-v1",
+  "description": "Strict duration-band control plus individually isolated metadata groups and their combination; anonymous snapshots have unverified historical availability.",
+  "recipes": [
+    {"name": "reference", "hidden": [64, 32], "features": "duration_band"},
+    {"name": "add_author", "hidden": [64, 32], "features": "band_author"},
+    {"name": "basic_duration", "hidden": [64, 32], "features": "band_basic_duration"},
+    {"name": "anonymous_user", "hidden": [64, 32], "features": "band_anonymous"},
+    {"name": "combined", "hidden": [64, 32], "features": "band_combined"}
+  ]
+}

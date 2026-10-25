@@ -80,5 +80,5 @@ explicitly disclosed. This repository studies offline modeling, not online servi
 Reference: [Wide & Deep, Cheng et al.](https://arxiv.org/abs/1606.07792).
 Code: [MIT](LICENSE); datasets retain their authors' licenses.
 
-KuaiRand WIP: [baseline findings and review questions](docs/kuairand_screen.md),
+KuaiRand WIP: [matched-seed recall merging and feature ablations](docs/kuairand_confirmation.md),
 with [temporal recall and Deep setup](docs/kuairand_baselines.md).

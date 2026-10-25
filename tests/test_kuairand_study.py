@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,8 +19,9 @@ from feed_ranker.data.kuairand import (
     prepare,
     temporal_events,
 )
+from feed_ranker.evaluation.binary import binary_metrics, user_auc_metrics
 from feed_ranker.experiments.kuairand_study import run
-from feed_ranker.features.kuairand import FEATURE_SETS, Encoding, KuaiRandFeatures
+from feed_ranker.features.kuairand import Encoding, KuaiRandFeatures
 from feed_ranker.inference.kuairand import SparseCooccurrenceRetriever, load_ranker, load_retrievers
 from feed_ranker.inference.retrievers import CooccurrenceRetriever
 from feed_ranker.models.recall import CosineCooccurrence
@@ -42,6 +44,86 @@ def events() -> pd.DataFrame:
 
 
 class KuaiRandStudyTests(unittest.TestCase):
+    def test_user_auc_exposes_propensity_and_one_class_exclusions(self) -> None:
+        users = np.array([1, 1, 1, 2, 2, 2, 3])
+        labels = np.array([1, 1, 0, 1, 0, 0, 1])
+        logits = np.array([2.0, 2.0, 2.0, -2.0, -2.0, -2.0, 0.0])
+        result = user_auc_metrics(users, labels, logits)
+        self.assertEqual(
+            result,
+            {
+                "macro_user_auc": 0.5,
+                "users_with_both_classes": 2,
+                "users_all": 3,
+            },
+        )
+        self.assertGreater(binary_metrics(labels, logits)["roc_auc"], 0.5)
+
+    def test_auc_resume_matches_uninterrupted_and_checks_recall_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw"
+            raw.mkdir()
+            events().to_csv(raw / "log_standard_fixture.csv", index=False)
+            prepare(raw, root / "data", users=0, train_end=10, val_end=15)
+            base = dict(
+                data=root / "data",
+                seeds=[42],
+                mf_epochs=1,
+                batch_size=4,
+                threads=1,
+                budget=2,
+                recipes=["reference"],
+                selection_metric="roc_auc",
+                config=Path(__file__).resolve().parents[1] / "configs/kuairand_study.json",
+            )
+            run(argparse.Namespace(**base, out=root / "first", epochs=1))
+            run(
+                argparse.Namespace(
+                    **base,
+                    out=root / "resumed",
+                    epochs=3,
+                    resume_from=root / "first",
+                    recall_from=root / "first",
+                )
+            )
+            run(
+                argparse.Namespace(
+                    **base,
+                    out=root / "continuous",
+                    epochs=3,
+                    recall_from=root / "first",
+                )
+            )
+            a, b = [root / name / "seed42" / "reference" for name in ("resumed", "continuous")]
+            for file in ("best.pt", "last.pt"):
+                left, right = [torch.load(p / file, weights_only=True) for p in (a, b)]
+                self.assertEqual(left["epoch"], right["epoch"])
+                for key in left["model"]:
+                    torch.testing.assert_close(
+                        left["model"][key], right["model"][key], rtol=0, atol=0
+                    )
+            history = json.loads((a / "history.json").read_text())
+            values = [row["val"]["roc_auc"] for row in history]
+            result = json.loads((a / "result.json").read_text())
+            self.assertEqual(result["best_epoch"], values.index(max(values)))
+            self.assertEqual(result["checkpoint_policy"]["mode"], "max")
+            for channel in ("popularity", "cooccurrence", "mf"):
+                np.testing.assert_array_equal(
+                    np.load(a / f"{channel}_candidates.npz")["items"],
+                    np.load(b / f"{channel}_candidates.npz")["items"],
+                )
+            (root / "first" / "seed42" / "mf_scores.parquet").write_bytes(b"corrupt")
+            with self.assertRaisesRegex(ValueError, "Recall artifact hash mismatch"):
+                run(
+                    argparse.Namespace(
+                        **base,
+                        out=root / "invalid",
+                        epochs=1,
+                        recall_from=root / "first",
+                    )
+                )
+
     def test_sparse_exact_cosine_and_singleton_diagonal(self) -> None:
         h = np.array(
             [[1, 1, 0, 0, 0], [0, 1, 1, 0, 0], [0, 0, 1, 1, 0], [0, 0, 0, 0, 0]], dtype=float
@@ -102,7 +184,7 @@ class KuaiRandStudyTests(unittest.TestCase):
         pos, neg = histories(train, encoding, "long_view")
         self.assertEqual(pos[0].tolist(), [0])
         self.assertEqual(neg[0].tolist(), [1])
-        for feature_set in FEATURE_SETS:
+        for feature_set in ("base", "no_user", "no_item", "no_duration", "duration_band"):
             builder = KuaiRandFeatures(encoding, feature_set)
             batch = builder.build(np.array([1, 99]), np.array([10, 99]))
             self.assertEqual(set(batch), set(builder.config.feature_cols))

@@ -177,7 +177,16 @@ class Trainer:
         current_config.pop("epochs")
         if previous_config != current_config:
             raise ValueError("Continuation may change only the epoch cap")
-        for key in ("data_manifest_sha256", "model_name", "hidden", "dropout", "use_ids"):
+        for key in (
+            "data_manifest_sha256",
+            "model_name",
+            "hidden",
+            "dropout",
+            "use_ids",
+            "feature_set",
+            "feature_config",
+            "side_features_sha256",
+        ):
             if last["metadata"].get(key) != metadata.get(key):
                 raise ValueError(f"Continuation metadata mismatch: {key}")
         history = json.loads((source / "history.json").read_text())

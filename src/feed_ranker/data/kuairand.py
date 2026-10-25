@@ -19,6 +19,7 @@ from torch.utils.data import Dataset
 from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.data.schema import RecommendationBatch
 from feed_ranker.features.kuairand import Encoding, KuaiRandFeatures
+from feed_ranker.features.kuairand_metadata import MetadataEncoding
 
 VERSION = "kuairand-temporal-binary-v1"
 TRAIN_END = 1651161600000  # 2022-04-29 00:00 UTC+8, exclusive
@@ -29,9 +30,14 @@ class EventDataset(Dataset):
     """Event BCE labels [B] and feature tensors; repeats keep their own labels."""
 
     def __init__(
-        self, frame: pd.DataFrame, encoding: Encoding, label: str, feature_set: str = "base"
+        self,
+        frame: pd.DataFrame,
+        encoding: Encoding,
+        label: str,
+        feature_set: str = "base",
+        metadata: MetadataEncoding | None = None,
     ) -> None:
-        builder = KuaiRandFeatures(encoding, feature_set)
+        builder = KuaiRandFeatures(encoding, feature_set, metadata)
         self.features = {
             name: torch.from_numpy(value)
             for name, value in builder.build(

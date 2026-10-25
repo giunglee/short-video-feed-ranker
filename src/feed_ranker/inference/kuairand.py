@@ -46,14 +46,20 @@ def load_ranker(path: "Path") -> "ModelRanker":
 
     from feed_ranker.artifacts import sha256
     from feed_ranker.features.kuairand import Encoding, KuaiRandFeatures
+    from feed_ranker.features.kuairand_metadata import MetadataEncoding
     from feed_ranker.inference.rankers import ModelRanker
     from feed_ranker.models.ranking_factory import ModelSpec, build_model
 
     state = torch.load(path, map_location="cpu", weights_only=True)
-    if state["version"] != "kuairand-ranker-v1":
+    if state["version"] not in ("kuairand-ranker-v1", "kuairand-ranker-v2"):
         raise ValueError("Unsupported KuaiRand ranker artifact")
     encoding = Encoding(*(state[name].numpy() for name in ["users", "items", "duration"]))
-    features = KuaiRandFeatures(encoding, state["feature_set"])
+    metadata = (
+        MetadataEncoding.from_state(state["metadata"])
+        if state["version"] == "kuairand-ranker-v2"
+        else None
+    )
+    features = KuaiRandFeatures(encoding, state["feature_set"], metadata)
     model = build_model(features.config, ModelSpec("deep", tuple(state["hidden"])))
     model.load_state_dict(state["model"])
     return ModelRanker(model, features, sha256(path))

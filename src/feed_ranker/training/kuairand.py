@@ -14,6 +14,7 @@ import torch
 from feed_ranker.artifacts import write_json
 from feed_ranker.data.recall import RecallTrainingState
 from feed_ranker.features.kuairand import Encoding
+from feed_ranker.features.kuairand_metadata import MetadataEncoding
 from feed_ranker.models.recall import BPRMF
 from feed_ranker.training.optimizer import OptimizerConfig, build_optimizer
 from feed_ranker.training.recall import ObservedSampler
@@ -100,13 +101,15 @@ def export_ranker(
     feature_set: str,
     hidden: list[int],
     manifest_sha256: str,
+    metadata: MetadataEncoding | None = None,
 ) -> None:
     """Self-contained label-free handoff to ModelRanker, with fitted-state provenance."""
     if path.exists():
         raise FileExistsError(path)
     torch.save(
         {
-            "version": "kuairand-ranker-v1",
+            "version": "kuairand-ranker-v2" if metadata is not None else "kuairand-ranker-v1",
+            "metadata": metadata.to_state() if metadata is not None else None,
             "model": model.state_dict(),
             "users": torch.from_numpy(encoding.users),
             "items": torch.from_numpy(encoding.items),

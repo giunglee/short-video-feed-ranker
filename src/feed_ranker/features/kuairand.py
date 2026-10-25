@@ -1,6 +1,7 @@
-"""Strict temporal candidate features fitted only on training events.
+"""Candidate features with training-only vocabularies and explicit input recipes.
 
-Snapshot attributes and current-event outcomes are intentionally outside this contract.
+The default is strict event-derived IDs/duration. Optional metadata recipes declare
+their snapshot assumptions separately; current-event outcomes never enter features.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import pandas as pd
 import torch
 
 from feed_ranker.features.config import DenseFeatureConfig, EmbeddingFeatureConfig, FeatureConfig
+from feed_ranker.features.kuairand_metadata import ANONYMOUS, MetadataEncoding
 
 
 @dataclass
@@ -62,16 +64,35 @@ class Encoding:
         )
 
 
-FEATURE_SETS = ("base", "no_user", "no_item", "no_duration", "duration_band")
+SIDE_FEATURE_SETS = (
+    "band_author",
+    "band_basic_duration",
+    "band_anonymous",
+    "band_combined",
+    "band_author_duration",
+)
+FEATURE_SETS = ("base", "no_user", "no_item", "no_duration", "duration_band", *SIDE_FEATURE_SETS)
 
 
 class KuaiRandFeatures:
     """Train/serve feature parity using the same fitted Encoding and input recipe."""
 
-    def __init__(self, encoding: Encoding, feature_set: str = "base") -> None:
+    def __init__(
+        self,
+        encoding: Encoding,
+        feature_set: str = "base",
+        metadata: MetadataEncoding | None = None,
+    ) -> None:
         if feature_set not in FEATURE_SETS:
             raise ValueError(f"Unknown strict feature set: {feature_set}")
         self.encoding, self.feature_set = encoding, feature_set
+        self.metadata = metadata if feature_set in SIDE_FEATURE_SETS else None
+        if feature_set in SIDE_FEATURE_SETS and metadata is None:
+            raise ValueError("Side-feature recipe requires fitted metadata")
+        if self.metadata is not None:
+            if not np.array_equal(self.metadata.users, encoding.users):
+                raise ValueError("Metadata training-user vocabulary mismatch")
+            self.metadata_items = pd.Index(self.metadata.videos)
         self.users = pd.Index(encoding.users)
         self.items = pd.Index(encoding.items)
         self.config = encoding.config()
@@ -82,14 +103,29 @@ class KuaiRandFeatures:
         if feature_set == "no_duration":
             # Constant zero satisfies the existing Deep numeric interface without information.
             self.config.dense_configs = [DenseFeatureConfig("constant")]
-        if feature_set == "duration_band":
+        if feature_set == "duration_band" or feature_set in SIDE_FEATURE_SETS:
             self.config.embedding_configs.append(EmbeddingFeatureConfig("duration_band", 5, 8))
+        if feature_set in ("band_author", "band_combined", "band_author_duration"):
+            self.config.embedding_configs.append(
+                EmbeddingFeatureConfig("author_id", len(self.metadata.author_vocabulary) + 1, 8)
+            )
+        if feature_set in ("band_anonymous", "band_combined"):
+            self.config.embedding_configs.extend(
+                EmbeddingFeatureConfig(name, len(vocab) + 1, 8)
+                for name, vocab in zip(ANONYMOUS, self.metadata.anonymous_vocabularies, strict=True)
+            )
 
     def build(self, users: np.ndarray, items: np.ndarray) -> dict[str, np.ndarray]:
         if users.shape != items.shape or users.ndim != 1:
             raise ValueError("Require aligned one-dimensional raw IDs")
         user_ids, item_ids = self.users.get_indexer(users) + 1, self.items.get_indexer(items) + 1
         duration = self.encoding.duration[item_ids]
+        metadata_ids = None
+        if self.metadata is not None:
+            metadata_ids = self.metadata_items.get_indexer(items) + 1
+        if self.feature_set in ("band_basic_duration", "band_combined", "band_author_duration"):
+            # Replace the source consistently in train and serve; no event duration is read.
+            duration = self.metadata.basic_duration[metadata_ids]
         band = np.searchsorted([10_000, 30_000, 60_000], duration, side="left") + 1
         band[duration == 0] = 0
         values = {
@@ -100,4 +136,13 @@ class KuaiRandFeatures:
             "constant": np.zeros(len(items), dtype=np.float32),
             "duration_band": band,
         }
+        if self.feature_set in ("band_author", "band_combined", "band_author_duration"):
+            values["author_id"] = self.metadata.author_codes[metadata_ids]
+        if self.feature_set in ("band_anonymous", "band_combined"):
+            values.update(
+                {
+                    name: self.metadata.anonymous_codes[user_ids, i]
+                    for i, name in enumerate(ANONYMOUS)
+                }
+            )
         return {name: values[name] for name in self.config.feature_cols}

@@ -1,5 +1,13 @@
 # KuaiRand data and protocol discussion — WIP
 
+**Historical discussion:** the label, split and checkpoint choices below have since
+been resolved for the current baseline: standard tab 1 / supplied `long_view`,
+April 29–May 1 validation, and maximum validation global AUC within 30 epochs.
+May 2–8 is accepted for final evaluation but remains unscored. The strict control
+and explicitly approved snapshot sensitivity arms are documented in the
+[current results](kuairand_confirmation.md) and [reproduction guide](kuairand_baselines.md).
+Statements below excluding snapshots describe the original strict baseline.
+
 **Read this before choosing another model.** The completed Deep screen is a plumbing and exploratory result. This review revisits the dataset assumptions; it does not activate a new split, change labels, or approve a winning model. Development on 1K followed by measured expansion to 27K is the agreed direction.
 
 Reading order: the decisions and protocol below, then the [114-field inventory](kuairand_feature_inventory.md). The [previous screen](kuairand_screen.md) remains a historical result under its original protocol. No engineered feature-cross section is included: Deep is the baseline.
