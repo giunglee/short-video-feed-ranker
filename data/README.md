@@ -67,3 +67,23 @@ python -m unittest discover -s tests -v
 - Only scalar regression is currently supported; recall remains paused.
 - `run_protocol.py` preserves the earlier full-run recipe and automatically scores
   test. Use the separate commands above for current validation-only ablations.
+
+## CI and dependency checks
+
+The [CI workflow](../.github/workflows/ci.yml) runs the lint, formatting, and unittest
+commands above on Python 3.10 and 3.12 for every PR targeting `main` and every push
+to `main`. Tests use small synthetic fixtures and CPU PyTorch; they do not download
+datasets or run full experiments. CI installs dependencies within the ranges in
+`pyproject.toml`; it does not reproduce an experiment's exact environment.
+
+Dependabot alerts flag known vulnerabilities in dependencies GitHub can identify
+from the repository. Security updates propose fixes as PRs when a suitable update
+is available. Broad dependency ranges do not describe every installed transitive
+version, so these alerts are not a complete audit of a local experiment environment.
+Review the advisory, compatibility, and CI results before merging a dependency PR.
+
+The [Dependabot configuration](../.github/dependabot.yml) also groups monthly
+GitHub Actions updates into one PR at a time, keeping CI's immutable action pins
+current. Routine Python version-update PRs and automatic merging are not enabled.
+Dependabot alerts and security updates are repository settings, separate from this
+configuration file.
