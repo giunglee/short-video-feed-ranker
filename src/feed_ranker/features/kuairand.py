@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from feed_ranker.data.metadata import ANONYMOUS, MetadataEncoding
 from feed_ranker.features.config import DenseFeatureConfig, EmbeddingFeatureConfig, FeatureConfig
-from feed_ranker.features.kuairand_metadata import ANONYMOUS, MetadataEncoding
 
 
 @dataclass

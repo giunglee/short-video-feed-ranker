@@ -14,7 +14,7 @@ import torch
 
 from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.data.kuairand import load_prepared
-from feed_ranker.features.kuairand_metadata import ANONYMOUS, MetadataEncoding
+from feed_ranker.data.metadata import ANONYMOUS, MetadataEncoding
 
 
 def prepare_metadata(data: Path, raw: Path, output: Path) -> None:

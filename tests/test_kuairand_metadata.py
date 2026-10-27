@@ -14,9 +14,9 @@ import torch
 
 from feed_ranker.artifacts import sha256
 from feed_ranker.data.kuairand import EventDataset, load_prepared, prepare
+from feed_ranker.data.metadata import ANONYMOUS, MetadataEncoding
 from feed_ranker.experiments.kuairand_study import run
 from feed_ranker.features.kuairand import Encoding, KuaiRandFeatures
-from feed_ranker.features.kuairand_metadata import ANONYMOUS, MetadataEncoding
 from feed_ranker.inference.kuairand import load_ranker
 from feed_ranker.inference.merged import MergedRetriever
 from feed_ranker.inference.replay import ReplayRetriever, ScoreTable

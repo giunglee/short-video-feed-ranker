@@ -17,9 +17,9 @@ import torch
 from torch.utils.data import Dataset
 
 from feed_ranker.artifacts import sha256, write_json
+from feed_ranker.data.metadata import MetadataEncoding
 from feed_ranker.data.schema import RecommendationBatch
 from feed_ranker.features.kuairand import Encoding, KuaiRandFeatures
-from feed_ranker.features.kuairand_metadata import MetadataEncoding
 
 VERSION = "kuairand-temporal-binary-v1"
 TRAIN_END = 1651161600000  # 2022-04-29 00:00 UTC+8, exclusive
@@ -111,21 +111,16 @@ def temporal_events(
     return train, val, removed
 
 
-def prepare(
+def read_cohort(
     raw: Path,
-    out: Path,
     *,
     label: str = "long_view",
     users: int = 32,
     cohort_seed: int = 2026,
     train_end: int = TRAIN_END,
     val_end: int = VAL_END,
-) -> tuple[pd.DataFrame, pd.DataFrame, Encoding, dict[str, Any]]:
-    """Select users using training traffic, read their complete pre-val-end logs.
-
-    Intended for 1K development cohorts; --users 0 selects all training users.
-    Chunked reading bounds ingestion; selected cohort events are materialized in RAM.
-    """
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Read complete source records before projection; select users from train only."""
     if users < 0 or label not in ("long_view", "is_click") or train_end >= val_end:
         raise ValueError("Invalid cohort size, label, or temporal bounds")
     files = sorted(raw.glob("log_standard*.csv"))
@@ -171,6 +166,43 @@ def prepare(
     train, val, duplicates = temporal_events(
         pd.concat(frames, ignore_index=True), label, train_end, val_end
     )
+    return (
+        train,
+        val,
+        {
+            "source_sha256": source_hashes,
+            "selected_users": selected.tolist(),
+            "duplicates_removed": duplicates,
+        },
+    )
+
+
+def prepare(
+    raw: Path,
+    out: Path,
+    *,
+    label: str = "long_view",
+    users: int = 32,
+    cohort_seed: int = 2026,
+    train_end: int = TRAIN_END,
+    val_end: int = VAL_END,
+) -> tuple[pd.DataFrame, pd.DataFrame, Encoding, dict[str, Any]]:
+    """Select users using training traffic, read their complete pre-val-end logs.
+
+    Intended for 1K development cohorts; --users 0 selects all training users.
+    Chunked reading bounds ingestion; selected cohort events are materialized in RAM.
+    """
+    train, val, source = read_cohort(
+        raw,
+        label=label,
+        users=users,
+        cohort_seed=cohort_seed,
+        train_end=train_end,
+        val_end=val_end,
+    )
+    source_hashes = source["source_sha256"]
+    selected = np.asarray(source["selected_users"], dtype=np.int64)
+    duplicates = source["duplicates_removed"]
     encoding = Encoding.fit(train)
     out.mkdir(parents=True, exist_ok=False)
     columns = ["event_id", "user_id", "video_id", "time_ms", label]

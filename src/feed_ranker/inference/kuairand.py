@@ -45,8 +45,8 @@ def load_ranker(path: "Path") -> "ModelRanker":
     import torch
 
     from feed_ranker.artifacts import sha256
+    from feed_ranker.data.metadata import MetadataEncoding
     from feed_ranker.features.kuairand import Encoding, KuaiRandFeatures
-    from feed_ranker.features.kuairand_metadata import MetadataEncoding
     from feed_ranker.inference.rankers import ModelRanker
     from feed_ranker.models.ranking_factory import ModelSpec, build_model
 

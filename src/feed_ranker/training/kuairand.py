@@ -12,9 +12,9 @@ import numpy as np
 import torch
 
 from feed_ranker.artifacts import write_json
+from feed_ranker.data.metadata import MetadataEncoding
 from feed_ranker.data.recall import RecallTrainingState
 from feed_ranker.features.kuairand import Encoding
-from feed_ranker.features.kuairand_metadata import MetadataEncoding
 from feed_ranker.models.recall import BPRMF
 from feed_ranker.training.optimizer import OptimizerConfig, build_optimizer
 from feed_ranker.training.recall import ObservedSampler

@@ -29,6 +29,7 @@ from feed_ranker.data.kuairand import (
     load_prepared,
     prepare,
 )
+from feed_ranker.data.metadata import MetadataEncoding
 from feed_ranker.evaluation.binary import (
     BinaryEvaluator,
     binary_metrics,
@@ -37,7 +38,6 @@ from feed_ranker.evaluation.binary import (
 )
 from feed_ranker.evaluation.kuairand import WindowBenchmark
 from feed_ranker.features.kuairand import FEATURE_SETS, KuaiRandFeatures
-from feed_ranker.features.kuairand_metadata import MetadataEncoding
 from feed_ranker.inference.kuairand import SparseCooccurrenceRetriever, load_ranker
 from feed_ranker.inference.merged import MergedRetriever
 from feed_ranker.inference.rankers import ModelRanker
