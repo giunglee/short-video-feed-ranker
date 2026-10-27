@@ -22,10 +22,18 @@ from feed_ranker.evaluation.kuairec import verify_split_membership
 from feed_ranker.experiments.ranking_recipe import Recipe, feature_config
 from feed_ranker.features.config import FeatureConfig
 from feed_ranker.features.kuairec import fit_candidate_features
-from feed_ranker.inference.artifacts import LoadedRanker, TrainingProvenance, load_ranker
-from feed_ranker.inference.retrievers import CooccurrenceRetriever, MFRetriever, PopularityRetriever
 from feed_ranker.models.ranking_factory import ModelSpec, build_model
 from feed_ranker.models.recall import BPRMF
+from feed_ranker.recommendation.legacy_artifacts import (
+    LoadedRanker,
+    TrainingProvenance,
+    load_ranker,
+)
+from feed_ranker.recommendation.retrievers import (
+    CooccurrenceRetriever,
+    MFRetriever,
+    PopularityRetriever,
+)
 from feed_ranker.training.export import export_ranker, export_retriever
 from feed_ranker.training.recall import fit_baseline
 

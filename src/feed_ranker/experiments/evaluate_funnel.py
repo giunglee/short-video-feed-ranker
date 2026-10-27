@@ -23,10 +23,14 @@ from feed_ranker.evaluation.funnel import FunnelEvaluator
 from feed_ranker.evaluation.kuairec import ObservedBenchmark, verify_split_membership
 from feed_ranker.evaluation.retrieval import evaluate as evaluate_binary
 from feed_ranker.evaluation.retrieval import score_pool
-from feed_ranker.inference.artifacts import ArtifactManifest, load_ranker, load_retriever
-from feed_ranker.inference.channels import ChannelRetriever
-from feed_ranker.inference.replay import ReplayRanker, ReplayRetriever, ScoreTable
+from feed_ranker.recommendation.channels import ChannelRetriever
+from feed_ranker.recommendation.legacy_artifacts import (
+    ArtifactManifest,
+    load_ranker,
+    load_retriever,
+)
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
+from feed_ranker.recommendation.replay import ReplayRanker, ReplayRetriever, ScoreTable
 from feed_ranker.recommendation.traces import RecommendationTrace
 
 

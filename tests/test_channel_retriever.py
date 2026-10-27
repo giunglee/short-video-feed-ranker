@@ -8,9 +8,7 @@ import pandas as pd
 
 from feed_ranker.evaluation.channels import ChannelDiagnostics, candidate_recall
 from feed_ranker.evaluation.funnel import FunnelEvaluator, GainPool
-from feed_ranker.inference.channels import ChannelRetriever
-from feed_ranker.inference.replay import ReplayRanker, ScoreTable
-from feed_ranker.inference.retrievers import PopularityRetriever
+from feed_ranker.recommendation.channels import ChannelRetriever
 from feed_ranker.recommendation.contracts import CandidateScope, Request, ScoredItems
 from feed_ranker.recommendation.merging import (
     anchored_candidates,
@@ -18,6 +16,8 @@ from feed_ranker.recommendation.merging import (
     reciprocal_rank_fusion,
 )
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
+from feed_ranker.recommendation.replay import ReplayRanker, ScoreTable
+from feed_ranker.recommendation.retrievers import PopularityRetriever
 
 
 class IdentityRanker:

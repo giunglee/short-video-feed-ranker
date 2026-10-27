@@ -12,12 +12,6 @@ import torch
 
 from feed_ranker.evaluation.funnel import FunnelEvaluator, GainPool
 from feed_ranker.evaluation.retrieval import score_pool
-from feed_ranker.inference.replay import ReplayRanker, ReplayRetriever, ScoreTable
-from feed_ranker.inference.retrievers import (
-    CooccurrenceRetriever,
-    MFRetriever,
-    PopularityRetriever,
-)
 from feed_ranker.models.recall import BPRMF, CosineCooccurrence
 from feed_ranker.recommendation.contracts import (
     CandidateScope,
@@ -26,6 +20,12 @@ from feed_ranker.recommendation.contracts import (
     ScoredItems,
 )
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
+from feed_ranker.recommendation.replay import ReplayRanker, ReplayRetriever, ScoreTable
+from feed_ranker.recommendation.retrievers import (
+    CooccurrenceRetriever,
+    MFRetriever,
+    PopularityRetriever,
+)
 from feed_ranker.recommendation.traces import RecommendationTrace
 from feed_ranker.training.recall import fit_baseline
 

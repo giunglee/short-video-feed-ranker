@@ -35,14 +35,14 @@ from feed_ranker.evaluation.binary import (
 )
 from feed_ranker.evaluation.kuairand import WindowBenchmark
 from feed_ranker.features.kuairand import FEATURE_SETS, KuaiRandFeatures
-from feed_ranker.inference.kuairand import SparseCooccurrenceRetriever, load_ranker
-from feed_ranker.inference.merged import MergedRetriever
-from feed_ranker.inference.rankers import ModelRanker
-from feed_ranker.inference.replay import ReplayRetriever, ScoreTable
-from feed_ranker.inference.retrievers import MFRetriever, PopularityRetriever
 from feed_ranker.models.ranking_factory import ModelSpec
 from feed_ranker.models.sparse_cooccurrence import SparseCosineCooccurrence
+from feed_ranker.recommendation.kuairand import SparseCooccurrenceRetriever, load_ranker
+from feed_ranker.recommendation.merged import MergedRetriever
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
+from feed_ranker.recommendation.rankers import ModelRanker
+from feed_ranker.recommendation.replay import ReplayRetriever, ScoreTable
+from feed_ranker.recommendation.retrievers import MFRetriever, PopularityRetriever
 from feed_ranker.recommendation.traces import RecommendationTrace
 from feed_ranker.training.kuairand import fit_legacy_deep, fit_mf
 from feed_ranker.training.optimizer import OptimizerConfig

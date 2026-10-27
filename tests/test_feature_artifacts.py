@@ -16,9 +16,9 @@ from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.experiments.convert_inference import convert_checkpoint
 from feed_ranker.features.config import DenseFeatureConfig, EmbeddingFeatureConfig, FeatureConfig
 from feed_ranker.features.kuairec import KuaiRecFeatureBuilder
-from feed_ranker.inference.artifacts import TrainingProvenance, load_ranker
 from feed_ranker.models.ranking_factory import ModelSpec, build_model
 from feed_ranker.recommendation.contracts import Request
+from feed_ranker.recommendation.legacy_artifacts import TrainingProvenance, load_ranker
 from feed_ranker.training.export import export_ranker
 
 

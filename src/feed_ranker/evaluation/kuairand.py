@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 
 from feed_ranker.evaluation.binary import candidate_metrics
-from feed_ranker.inference.replay import ReplayRetriever, ScoreTable
 from feed_ranker.recommendation.contracts import CandidateScope, Recommendation, Request, Retriever
+from feed_ranker.recommendation.replay import ReplayRetriever, ScoreTable
 
 
 class WindowBenchmark:

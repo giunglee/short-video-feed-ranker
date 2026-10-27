@@ -7,10 +7,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from feed_ranker.inference.rankers import ModelRanker
-from feed_ranker.inference.retrievers import select
 from feed_ranker.models.sparse_cooccurrence import SparseCosineCooccurrence
 from feed_ranker.recommendation.contracts import CandidateScope, Request, RetrievalResult, Retriever
+from feed_ranker.recommendation.rankers import ModelRanker
+from feed_ranker.recommendation.retrievers import select
 
 
 class SparseCooccurrenceRetriever:
@@ -48,8 +48,8 @@ def load_ranker(path: Path) -> ModelRanker:
 
 
 def load_retrievers(directory: Path) -> list[Retriever]:
-    from feed_ranker.inference.retrievers import MFRetriever, PopularityRetriever
     from feed_ranker.models.legacy_kuairand import load_legacy_recall
+    from feed_ranker.recommendation.retrievers import MFRetriever, PopularityRetriever
 
     pop, cosine, mf = load_legacy_recall(directory)
     return [

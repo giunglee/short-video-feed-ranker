@@ -17,11 +17,11 @@ from feed_ranker.data.kuairand import EventDataset, load_prepared, prepare
 from feed_ranker.data.metadata import ANONYMOUS, MetadataEncoding
 from feed_ranker.experiments.kuairand_study import run
 from feed_ranker.features.kuairand import Encoding, KuaiRandFeatures
-from feed_ranker.inference.kuairand import load_ranker
-from feed_ranker.inference.merged import MergedRetriever
-from feed_ranker.inference.replay import ReplayRetriever, ScoreTable
 from feed_ranker.recommendation.contracts import CandidateScope, Request
+from feed_ranker.recommendation.kuairand import load_ranker
+from feed_ranker.recommendation.merged import MergedRetriever
 from feed_ranker.recommendation.merging import merge_channels, reciprocal_rank_fusion
+from feed_ranker.recommendation.replay import ReplayRetriever, ScoreTable
 
 
 def fixture() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

@@ -22,11 +22,15 @@ from feed_ranker.data.kuairand import (
 from feed_ranker.evaluation.binary import binary_metrics, user_auc_metrics
 from feed_ranker.experiments.kuairand_study import run
 from feed_ranker.features.kuairand import Encoding, KuaiRandFeatures
-from feed_ranker.inference.kuairand import SparseCooccurrenceRetriever, load_ranker, load_retrievers
-from feed_ranker.inference.retrievers import CooccurrenceRetriever
 from feed_ranker.models.recall import CosineCooccurrence
 from feed_ranker.models.sparse_cooccurrence import SparseCosineCooccurrence
 from feed_ranker.recommendation.contracts import CandidateScope, Request
+from feed_ranker.recommendation.kuairand import (
+    SparseCooccurrenceRetriever,
+    load_ranker,
+    load_retrievers,
+)
+from feed_ranker.recommendation.retrievers import CooccurrenceRetriever
 
 
 def events() -> pd.DataFrame:

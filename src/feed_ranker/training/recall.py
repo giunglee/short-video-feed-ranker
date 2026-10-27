@@ -4,8 +4,8 @@ import numpy as np
 import torch
 
 from feed_ranker.data.recall import RecallTrainingState
-from feed_ranker.inference.retrievers import CooccurrenceRetriever, PopularityRetriever
 from feed_ranker.models.recall import CosineCooccurrence
+from feed_ranker.recommendation.retrievers import CooccurrenceRetriever, PopularityRetriever
 
 
 def incidence(data: RecallTrainingState) -> torch.Tensor:

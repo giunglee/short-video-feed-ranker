@@ -24,10 +24,10 @@ from feed_ranker.experiments.convert_inference import (
 from feed_ranker.experiments.evaluate_funnel import run
 from feed_ranker.experiments.ranking_recipe import Recipe, build_architecture, feature_config
 from feed_ranker.features.kuairec import KuaiRecFeatureBuilder
-from feed_ranker.inference.artifacts import load_ranker
-from feed_ranker.inference.rankers import ModelRanker
 from feed_ranker.models.recall import BPRMF
 from feed_ranker.recommendation.contracts import Request
+from feed_ranker.recommendation.legacy_artifacts import load_ranker
+from feed_ranker.recommendation.rankers import ModelRanker
 
 
 class DeepFunnelTests(unittest.TestCase):

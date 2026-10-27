@@ -13,15 +13,15 @@ import torch
 from feed_ranker.artifacts import sha256
 from feed_ranker.features.config import FeatureConfig
 from feed_ranker.features.kuairec import KuaiRecFeatureBuilder
-from feed_ranker.inference.rankers import ModelRanker
-from feed_ranker.inference.retrievers import (
+from feed_ranker.models.ranking_factory import ModelSpec, build_model
+from feed_ranker.models.recall import BPRMF, CosineCooccurrence
+from feed_ranker.recommendation.contracts import Retriever
+from feed_ranker.recommendation.rankers import ModelRanker
+from feed_ranker.recommendation.retrievers import (
     CooccurrenceRetriever,
     MFRetriever,
     PopularityRetriever,
 )
-from feed_ranker.models.ranking_factory import ModelSpec, build_model
-from feed_ranker.models.recall import BPRMF, CosineCooccurrence
-from feed_ranker.recommendation.contracts import Retriever
 
 VERSION = "recommendation-artifact-v1"
 

@@ -24,11 +24,15 @@ from feed_ranker.features.config import (
     FeatureConfig,
 )
 from feed_ranker.features.kuairec import KuaiRecFeatureBuilder
-from feed_ranker.inference.artifacts import TrainingProvenance, load_ranker, load_retriever
-from feed_ranker.inference.rankers import ModelRanker
 from feed_ranker.models.ranking_factory import ModelSpec, build_model
 from feed_ranker.models.recall import BPRMF
 from feed_ranker.recommendation.contracts import CandidateScope, Request
+from feed_ranker.recommendation.legacy_artifacts import (
+    TrainingProvenance,
+    load_ranker,
+    load_retriever,
+)
+from feed_ranker.recommendation.rankers import ModelRanker
 from feed_ranker.training.export import export_ranker
 from feed_ranker.training.recall import fit_baseline
 

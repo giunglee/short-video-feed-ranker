@@ -13,9 +13,17 @@ from torch import nn
 
 from feed_ranker.artifacts import sha256, write_json
 from feed_ranker.features.kuairec import KuaiRecFeatureBuilder, pad_categories
-from feed_ranker.inference.artifacts import VERSION, ArtifactManifest, TrainingProvenance
-from feed_ranker.inference.retrievers import CooccurrenceRetriever, MFRetriever, PopularityRetriever
 from feed_ranker.models.ranking_factory import ModelSpec
+from feed_ranker.recommendation.legacy_artifacts import (
+    VERSION,
+    ArtifactManifest,
+    TrainingProvenance,
+)
+from feed_ranker.recommendation.retrievers import (
+    CooccurrenceRetriever,
+    MFRetriever,
+    PopularityRetriever,
+)
 
 
 def _write(
