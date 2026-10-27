@@ -18,8 +18,10 @@ import torch
 from torch import nn
 
 from feed_ranker.artifacts import save_checkpoint, write_json
+from feed_ranker.data.prepared import Batch
 from feed_ranker.data.schema import RecommendationBatch
 from feed_ranker.evaluation.ranking import predict_regression
+from feed_ranker.training.objective import Objective
 from feed_ranker.training.optimizer import OptimizerConfig, build_optimizer
 
 
@@ -89,16 +91,24 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
-        train_batches: Callable[[int], Iterable[RecommendationBatch]],
+        train_batches: Callable[[int], Iterable[RecommendationBatch | Batch]],
         config: TrainConfig,
         *,
-        loss_fn: nn.Module,
+        loss_fn: nn.Module | None = None,
         evaluator: ModelEvaluator,
+        objective: Objective | None = None,
     ) -> None:
         self.model = model.to(config.device)
         self.train_batches = train_batches
         self.config = config
-        self.loss_fn = loss_fn.to(config.device)
+        if (loss_fn is None) == (objective is None):
+            raise ValueError("Provide exactly one loss function or named objective")
+        if objective is not None and (
+            config.weighting != "event" or any(t.loss != config.loss for t in objective.tasks)
+        ):
+            raise ValueError("Training loss configuration disagrees with named objective")
+        self.loss_fn = None if loss_fn is None else loss_fn.to(config.device)
+        self.objective = None if objective is None else objective.to(config.device)
         self.evaluator = evaluator
         self.optimizer = build_optimizer(self.model, config.optimizer)
 
@@ -186,6 +196,7 @@ class Trainer:
             "feature_set",
             "feature_config",
             "side_features_sha256",
+            "resume_contract",
         ):
             if last["metadata"].get(key) != metadata.get(key):
                 raise ValueError(f"Continuation metadata mismatch: {key}")
@@ -206,37 +217,58 @@ class Trainer:
         shutil.copy2(source / "best.pt", destination / "best.pt")
         return history, expected
 
-    def _train_epoch(self, epoch: int) -> dict[str, float | int]:
+    def _train_epoch(self, epoch: int) -> dict[str, Any]:
         self.model.train()
         loss_sum = 0.0
         row_count = 0
         weight_total = 0.0
         gradient_norms: list[float] = []
+        task_totals: dict[str, dict[str, float]] = {}
         batches = self.train_batches(epoch)
         for step, batch in enumerate(batches):
             if self.config.steps is not None and step >= self.config.steps:
                 break
             self.optimizer.zero_grad(set_to_none=True)
-            labels = batch["label"].to(self.config.device)
-            predicted = predict_regression(
-                self.model, batch["feature"], len(labels), self.config.device
-            )
-            loss = self.loss_fn(predicted, labels)
-            batch_weight = float(len(labels))
-            if self.config.weighting == "pair":
-                if loss.shape != labels.shape or "pair_weight" not in batch:
-                    raise ValueError(
-                        "Pair weighting requires per-event losses and prepared pair weights"
+            if self.objective is not None:
+                moved = {
+                    role: {n: v.to(self.config.device) for n, v in values.items()}
+                    for role, values in batch.items()
+                }
+                outputs = self.model({"features": moved["features"]})
+                loss, diagnostics = self.objective(outputs, moved)
+                rows = len(next(iter(outputs.values())))
+                batch_weight = float(rows)
+                for name, values in diagnostics.items():
+                    total = task_totals.setdefault(
+                        name,
+                        dict.fromkeys(
+                            ("numerator", "denominator", "valid_count", "effective_count"), 0.0
+                        ),
                     )
-                weights = batch["pair_weight"].to(self.config.device)
-                if (
-                    weights.shape != labels.shape
-                    or not torch.isfinite(weights).all()
-                    or (weights <= 0).any()
-                ):
-                    raise ValueError("Invalid pair weights")
-                batch_weight = float(weights.sum())
-                loss = (loss * weights).sum() / weights.sum()
+                    for key in total:
+                        total[key] += values[key]
+            else:
+                labels = batch["label"].to(self.config.device)
+                predicted = predict_regression(
+                    self.model, batch["feature"], len(labels), self.config.device
+                )
+                loss = self.loss_fn(predicted, labels)
+                batch_weight = float(len(labels))
+                if self.config.weighting == "pair":
+                    if loss.shape != labels.shape or "pair_weight" not in batch:
+                        raise ValueError(
+                            "Pair weighting requires per-event losses and prepared pair weights"
+                        )
+                    weights = batch["pair_weight"].to(self.config.device)
+                    if (
+                        weights.shape != labels.shape
+                        or not torch.isfinite(weights).all()
+                        or (weights <= 0).any()
+                    ):
+                        raise ValueError("Invalid pair weights")
+                    batch_weight = float(weights.sum())
+                    loss = (loss * weights).sum() / weights.sum()
+                rows = len(labels)
             if loss.ndim != 0 or not torch.isfinite(loss):
                 raise ValueError(f"Nonfinite training loss at epoch {epoch}, step {step}")
             loss.backward()
@@ -247,13 +279,23 @@ class Trainer:
             self.optimizer.step()
             loss_sum += loss.item() * batch_weight
             weight_total += batch_weight
-            row_count += len(labels)
+            row_count += rows
             gradient_norms.append(float(norm))
 
         if row_count == 0:
             raise ValueError("Empty training epoch")
+        mean_loss = loss_sum / weight_total
+        if self.objective is not None:
+            mean_loss = sum(
+                t.task_weight
+                * task_totals[t.output]["numerator"]
+                / task_totals[t.output]["denominator"]
+                for t in self.objective.tasks
+                if task_totals[t.output]["denominator"] > 0
+            )
         return {
-            "train_loss": loss_sum / weight_total,
+            **({"tasks": task_totals} if task_totals else {}),
+            "train_loss": mean_loss,
             "train_rows": row_count,
             "gradient_norm_mean": sum(gradient_norms) / len(gradient_norms),
         }

@@ -11,14 +11,12 @@ import gc
 import json
 import shutil
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-from torch import nn
 
 from feed_ranker.artifacts import collect_run_provenance, sha256, write_json
 from feed_ranker.data.kuairand import (
@@ -31,7 +29,6 @@ from feed_ranker.data.kuairand import (
 )
 from feed_ranker.data.metadata import MetadataEncoding
 from feed_ranker.evaluation.binary import (
-    BinaryEvaluator,
     binary_metrics,
     predict_binary,
     user_auc_metrics,
@@ -43,14 +40,13 @@ from feed_ranker.inference.merged import MergedRetriever
 from feed_ranker.inference.rankers import ModelRanker
 from feed_ranker.inference.replay import ReplayRetriever, ScoreTable
 from feed_ranker.inference.retrievers import MFRetriever, PopularityRetriever
-from feed_ranker.models.legacy_kuairand import export_ranker
-from feed_ranker.models.ranking_factory import ModelSpec, build_model
+from feed_ranker.models.ranking_factory import ModelSpec
 from feed_ranker.models.sparse_cooccurrence import SparseCosineCooccurrence
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
 from feed_ranker.recommendation.traces import RecommendationTrace
-from feed_ranker.training.kuairand import fit_mf
+from feed_ranker.training.kuairand import fit_legacy_deep, fit_mf
 from feed_ranker.training.optimizer import OptimizerConfig
-from feed_ranker.training.trainer import TrainConfig, Trainer
+from feed_ranker.training.trainer import TrainConfig
 
 
 def read_recipes(path: Path, selected: list[str] | None) -> list[dict[str, Any]]:
@@ -158,11 +154,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             started = time.monotonic()
             directory = seed_dir / recipe["name"]
             features = KuaiRandFeatures(encoding, recipe["features"], metadata)
-            train_data, val_data = [
-                EventDataset(f, encoding, label, recipe["features"], metadata) for f in [train, val]
-            ]
-            torch.manual_seed(seed)
-            model = build_model(features.config, ModelSpec("deep", tuple(recipe["hidden"])))
             config = TrainConfig(
                 epochs=args.epochs,
                 batch_size=args.batch_size,
@@ -174,37 +165,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 selection_mode="max" if args.selection_metric == "roc_auc" else "min",
                 optimizer=OptimizerConfig(lr=0.001),
             )
-            evaluator = BinaryEvaluator(lambda data=val_data: data.batches(8192))
-            trainer = Trainer(
-                model,
-                lambda epoch, data=train_data, run_seed=seed: data.batches(
-                    args.batch_size, run_seed + epoch
-                ),
+            model, result = fit_legacy_deep(
+                train,
+                val,
+                encoding,
+                features,
+                label,
+                recipe["hidden"],
                 config,
-                loss_fn=nn.BCEWithLogitsLoss(),
-                evaluator=evaluator,
-            )
-            print(f"recipe={recipe['name']} seed={seed}", flush=True)
-            result = trainer.fit(
                 directory,
-                {
-                    "data_manifest_sha256": manifest_hash,
-                    "model_name": "DeepNN",
-                    "hidden": recipe["hidden"],
-                    "dropout": 0.0,
-                    "use_ids": recipe["features"] not in ("no_user", "no_item"),
-                    "feature_set": recipe["features"],
-                    "feature_config": asdict(features.config),
-                    "side_features_sha256": metadata_hash
-                    if features.metadata is not None
-                    else None,
-                },
+                manifest_hash,
+                metadata_hash,
                 resume_from=(
                     args.resume_from / f"seed{seed}" / recipe["name"]
                     if args.resume_from is not None
                     else None
                 ),
             )
+            val_data = EventDataset(val, encoding, label, recipe["features"], metadata)
             result["exploratory"] = True
             write_json(directory / "result.json", result)
             labels, logits = predict_binary(model, val_data.batches(8192))
@@ -225,15 +203,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 if mask.any()
             }
             artifact = directory / "inference.pt"
-            export_ranker(
-                artifact,
-                model,
-                encoding,
-                recipe["features"],
-                recipe["hidden"],
-                manifest_hash,
-                features.metadata,
-            )
             ranker = load_ranker(artifact)
             expected = (
                 ModelRanker(model, features, "training-model")
@@ -266,7 +235,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             results.append(row)
             write_json(directory / "review.json", row)
             write_json(args.out / "runs.json", results)
-            del trainer, model, ranker, train_data, val_data
+            del model, ranker, val_data
             gc.collect()
     aggregates = []
     for recipe in recipes:
