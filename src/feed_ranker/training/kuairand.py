@@ -12,7 +12,6 @@ import numpy as np
 import torch
 
 from feed_ranker.artifacts import write_json
-from feed_ranker.data.metadata import MetadataEncoding
 from feed_ranker.data.recall import RecallTrainingState
 from feed_ranker.features.kuairand import Encoding
 from feed_ranker.models.recall import BPRMF
@@ -92,31 +91,3 @@ def fit_mf(
             atol=0,
         )
     return model.eval(), supported, curve
-
-
-def export_ranker(
-    path: Path,
-    model: "torch.nn.Module",
-    encoding: Encoding,
-    feature_set: str,
-    hidden: list[int],
-    manifest_sha256: str,
-    metadata: MetadataEncoding | None = None,
-) -> None:
-    """Self-contained label-free handoff to ModelRanker, with fitted-state provenance."""
-    if path.exists():
-        raise FileExistsError(path)
-    torch.save(
-        {
-            "version": "kuairand-ranker-v2" if metadata is not None else "kuairand-ranker-v1",
-            "metadata": metadata.to_state() if metadata is not None else None,
-            "model": model.state_dict(),
-            "users": torch.from_numpy(encoding.users),
-            "items": torch.from_numpy(encoding.items),
-            "duration": torch.from_numpy(encoding.duration),
-            "feature_set": feature_set,
-            "hidden": hidden,
-            "data_manifest_sha256": manifest_sha256,
-        },
-        path,
-    )
