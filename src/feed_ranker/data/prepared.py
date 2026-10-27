@@ -397,6 +397,9 @@ class EventDataset(Dataset):
         self.targets = {
             n: torch.from_numpy(frame[n].to_numpy(dtype=np.float32, copy=True)) for n in targets
         }
+        self.metadata["warm_item"] = state.gather(
+            self.metadata["user_id"].numpy(), self.metadata["video_id"].numpy(), ("item_code",)
+        )["item_code"].gt(0)
 
     def __len__(self) -> int:
         return len(self.metadata["event_id"])
