@@ -13,7 +13,7 @@ from feed_ranker.evaluation.predictions import (
     evaluate_predictions,
 )
 from feed_ranker.models.ranking import DeepConfig, DeepModel
-from feed_ranker.preprocessing.features import fit_features
+from feed_ranker.preprocessing.features import fit_entity_features
 from feed_ranker.training.objectives import Objective, TaskLossConfig
 
 
@@ -31,7 +31,7 @@ class NamedPredictionTests(unittest.TestCase):
         self.assertTrue(model.weight.grad.ne(0).all())
 
     def test_model_only_consumes_its_declared_inputs(self) -> None:
-        state = fit_features(
+        state = fit_entity_features(
             pd.DataFrame({"user_id": [1, 1], "video_id": [10, 20], "duration_ms": [100, 200]})
         )
         config = DeepConfig(

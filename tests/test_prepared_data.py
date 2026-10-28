@@ -34,8 +34,7 @@ def raw_fixture(directory: Path) -> Path:
 
 class PreparedDataTests(unittest.TestCase):
     def test_snapshot_duration_is_distinct_and_cold_metadata_is_not_warm(self) -> None:
-        from feed_ranker.preprocessing.features import fit_features
-        from feed_ranker.preprocessing.metadata import ANONYMOUS
+        from feed_ranker.preprocessing.features import ANONYMOUS, fit_entity_features
 
         train = pd.DataFrame(
             {"user_id": [1, 1], "video_id": [10, 20], "duration_ms": [100.0, 200.0]}
@@ -48,7 +47,7 @@ class PreparedDataTests(unittest.TestCase):
             }
         )
         profiles = pd.DataFrame({"user_id": [1, 99], **{n: [0, 999] for n in ANONYMOUS}})
-        state = fit_features(train, basic, profiles)
+        state = fit_entity_features(train, basic, profiles)
         values = state.gather(np.array([1, 99]), np.array([10, 40]))
         self.assertEqual(values["item_code"].tolist(), [1, 0])
         self.assertEqual(values["author_code"].tolist(), [1, 1])

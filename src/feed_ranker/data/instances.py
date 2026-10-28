@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 from torch.utils.data import BatchSampler, DataLoader, Dataset
 
-from feed_ranker.data.feature_tables import FeatureTables
+from feed_ranker.data.entity_features import EntityFeatureLookup
 
 
 class Batch(TypedDict, total=False):
@@ -22,7 +22,7 @@ class EventDataset(Dataset):
     def __init__(
         self,
         frame: pd.DataFrame,
-        state: FeatureTables,
+        state: EntityFeatureLookup,
         features: tuple[str, ...],
         targets: tuple[str, ...],
     ) -> None:

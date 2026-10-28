@@ -19,12 +19,12 @@ from feed_ranker.artifacts import (
 )
 from feed_ranker.models.ranking import DeepConfig, DeepModel
 from feed_ranker.models.recall import BPRMF, SparseCosineCooccurrence
-from feed_ranker.preprocessing.features import fit_features
+from feed_ranker.preprocessing.features import fit_entity_features
 
 
 class ModelArtifactTests(unittest.TestCase):
     def test_all_scorers_roundtrip_without_events_and_preserve_rng(self) -> None:
-        state = fit_features(
+        state = fit_entity_features(
             pd.DataFrame(
                 {"user_id": [1, 1, 2], "video_id": [10, 20, 20], "duration_ms": [100, 200, 200]}
             )
@@ -41,9 +41,9 @@ class ModelArtifactTests(unittest.TestCase):
         artifacts = [RankerArtifact(deep, state, "", {})]
         artifacts.extend(
             [
-                MFArtifact(mf, state.users, state.items, np.array([True, False]), "", {}),
-                CosineArtifact(cosine, state.users, state.items, "", {}),
-                PopularityArtifact(cosine.counts, state.users, state.items, "", {}),
+                MFArtifact(mf, state.user_ids, state.item_ids, np.array([True, False]), "", {}),
+                CosineArtifact(cosine, state.user_ids, state.item_ids, "", {}),
+                PopularityArtifact(cosine.counts, state.user_ids, state.item_ids, "", {}),
             ]
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,7 +92,7 @@ class ModelArtifactTests(unittest.TestCase):
                 load_artifact(Path(tmp) / "mf")
 
     def test_v2_artifact_scores_without_reconstructing_training_objective(self) -> None:
-        state = fit_features(
+        state = fit_entity_features(
             pd.DataFrame({"user_id": [1, 1], "video_id": [10, 20], "duration_ms": [100, 200]})
         )
         model = DeepModel(DeepConfig(dense=("train_duration_log1p",), hidden=(4,))).eval()

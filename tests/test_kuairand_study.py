@@ -10,7 +10,7 @@ import pandas as pd
 from feed_ranker.data.instances import EventDataset
 from feed_ranker.evaluation.metrics import binary_metrics, user_auc_metrics
 from feed_ranker.models.recall import SparseCosineCooccurrence
-from feed_ranker.preprocessing.features import fit_features
+from feed_ranker.preprocessing.features import fit_entity_features
 from feed_ranker.preprocessing.kuairand import temporal_events
 from feed_ranker.training.bpr import ObservedSampler, histories
 
@@ -75,8 +75,8 @@ class KuaiRandStudyTests(unittest.TestCase):
         )
         self.assertEqual((duplicates, len(train), len(val)), (1, 5, 5))
         self.assertEqual(val.time_ms.eq(10).sum(), 3)
-        state = fit_features(train)
-        pos, neg = histories(train, state.users, state.items, "long_view")
+        state = fit_entity_features(train)
+        pos, neg = histories(train, state.user_ids, state.item_ids, "long_view")
         self.assertEqual(pos[0].tolist(), [0])
         self.assertEqual(neg[0].tolist(), [1])
         names = tuple(state.columns)

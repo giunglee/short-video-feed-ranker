@@ -12,16 +12,16 @@ state and its public methods before following the private implementation.
 
 - **Preparation functions** — `preprocessing/kuairand.py:prepare_kuairand()` owns
   raw interpretation, cohort/split selection and writing prepared outputs.
-  `preprocessing/features.py:fit_features()` fits entity features using training
+  `preprocessing/features.py:fit_entity_features()` fits entity features using training
   events and explicitly supplied snapshots. Neither selects model architectures.
 - **`PreparedDataset`** — state: path, manifest, targets, event dtypes, identity.
   Methods: `read_split(name, columns)`, `load_feature_state()`, `validate()`.
-- **`FeatureTables` (dataclass)** — state: raw user/item keys, columns, entity
+- **`EntityFeatureLookup` (dataclass)** — state: raw `user_ids`/`item_ids`, columns, entity
   assignments, vocabulary sizes, descriptions, cached lookup indexes.
-  Methods: `gather(users, items, names)`, `save(directory)`, `load(directory)`.
+  Methods: `gather(user_ids, item_ids, names)`, `save(directory)`, `load(directory)`.
   Preparation constructs this state; training and inference share its runtime
   lookup. `_duration_columns(values)` is a private pure transform in preprocessing.
-- **`EventDataset(Dataset)`** — state: shared FeatureTables, selected feature names,
+- **`EventDataset(Dataset)`** — state: shared EntityFeatureLookup, selected feature names,
   target tensors and event metadata. Methods: `__len__()`, `__getitem__(index)`.
   `make_loader(dataset, batch_size, seed)` supplies the standard PyTorch DataLoader.
 - **`DeepModel(nn.Module)`** — state: DeepConfig, embeddings and MLP.
@@ -50,7 +50,7 @@ state and its public methods before following the private implementation.
   Methods: `collect(model, batches)` and `evaluate(model, batches)`.
   **`Predictions` (dataclass)** stores aligned labels, logits, users, warm flags and
   validity. `evaluate_predictions(records)` computes metrics without a model.
-- **Fitted artifact dataclasses** — `RankerArtifact` holds model plus FeatureTables;
+- **Fitted artifact dataclasses** — `RankerArtifact` holds model plus EntityFeatureLookup;
   `MFArtifact` holds model, vocabularies and supported users; `CosineArtifact` and
   `PopularityArtifact` hold fitted scores/state plus vocabularies. Each carries
   identity and provenance. `save_artifact()`/`load_artifact()` own persistence.
@@ -94,8 +94,8 @@ These functions do not select model inputs, fit transforms or score a final mode
 ## Module layout
 
 ```text
-preprocessing/ kuairand.py, features.py, metadata.py, kuairand_audit.py
-data/          prepared.py, feature_tables.py, instances.py
+preprocessing/ kuairand.py, features.py, kuairand_audit.py
+data/          prepared.py, entity_features.py, instances.py
 models/        ranking.py, recall.py, components/mlp.py
 training/      objectives.py, trainer.py, bpr.py, optimizer.py, jobs.py
 artifacts.py   fitted scorer records and validated save/load

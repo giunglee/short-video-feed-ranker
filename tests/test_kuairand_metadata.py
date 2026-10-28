@@ -7,8 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from feed_ranker.preprocessing.features import fit_features
-from feed_ranker.preprocessing.metadata import ANONYMOUS, MetadataEncoding
+from feed_ranker.preprocessing.features import ANONYMOUS, fit_entity_features
 from feed_ranker.recommendation.contracts import CandidateScope, Request
 from feed_ranker.recommendation.merged import MergedRetriever
 from feed_ranker.recommendation.merging import merge_channels, reciprocal_rank_fusion
@@ -81,7 +80,7 @@ class MetadataTests(unittest.TestCase):
     def test_training_vocabularies_and_unknown_metadata_remain_distinct(self) -> None:
         events, basic, profiles = fixture()
         train = events.loc[events.time_ms.lt(10)]
-        state = fit_features(train, basic, profiles)
+        state = fit_entity_features(train, basic, profiles)
         values = state.gather(np.array([1, 2, 99]), np.array([40, 50, 999]))
         self.assertEqual(values["item_code"].tolist(), [0, 0, 0])
         self.assertEqual(values["author_code"].tolist(), [1, 0, 0])
@@ -89,15 +88,32 @@ class MetadataTests(unittest.TestCase):
         np.testing.assert_allclose(
             values["metadata_duration_log1p"], np.log1p([440, 550, 0]), rtol=1e-7
         )
-        encoded = MetadataEncoding.fit(state.users, np.array([10, 20, 30]), basic, profiles)
-        self.assertEqual(encoded.author_vocabulary.tolist(), [7, 8, 9])
-        self.assertEqual(encoded.anonymous_vocabularies[0].tolist(), [0])
+        self.assertEqual(state.vocab_sizes["author_code"], 4)
+        self.assertEqual(state.vocab_sizes["onehot_feat0"], 2)
         with self.assertRaisesRegex(ValueError, "unique"):
-            MetadataEncoding.fit(
-                state.users, state.items, pd.concat([basic, basic.iloc[[0]]]), profiles
-            )
+            fit_entity_features(train, pd.concat([basic, basic.iloc[[0]]]), profiles)
         changed = basic.copy()
         changed.loc[changed.video_id.eq(50), "author_id"] = 12345
-        after = fit_features(train, changed, profiles)
+        after = fit_entity_features(train, changed, profiles)
         self.assertEqual(after.vocab_sizes, state.vocab_sizes)
         np.testing.assert_array_equal(after.columns["author_code"], state.columns["author_code"])
+
+    def test_lookup_rows_are_independent_of_embedding_codes(self) -> None:
+        train = pd.DataFrame(
+            {"user_id": [10, 10], "video_id": [100, 300], "duration_ms": [1000, 3000]}
+        )
+        basic = pd.DataFrame(
+            {
+                "video_id": [100, 200, 300],
+                "author_id": [42, 42, 900],
+                "video_duration": [1000, 2000, 3000],
+            }
+        )
+        profiles = pd.DataFrame({"user_id": [10], **{n: [0] for n in ANONYMOUS}})
+        lookup = fit_entity_features(train, basic, profiles)
+        self.assertEqual(lookup.item_ids.tolist(), [100, 200, 300])
+        values = lookup.gather(user_ids=np.array([10, 10, 10]), item_ids=np.array([200, 300, 999]))
+        self.assertEqual(values["item_code"].tolist(), [0, 2, 0])
+        self.assertEqual(values["author_code"].tolist(), [1, 2, 0])
+        self.assertEqual(values["metadata_duration_missing"].tolist(), [0, 0, 1])
+        self.assertEqual(values["train_duration_missing"].tolist(), [1, 0, 1])

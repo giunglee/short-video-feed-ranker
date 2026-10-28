@@ -129,7 +129,7 @@ def open_benchmark(data_path: Path, target: str = "long_view") -> WindowBenchmar
     if target not in data.manifest["targets"]:
         raise ValueError("Benchmark target must be a prepared target")
     state = data.load_feature_state()
-    warm_items = state.items[state.columns["item_code"][1:] > 0]
+    warm_items = state.item_ids[state.columns["item_code"][1:] > 0]
     return WindowBenchmark(
         data.read_split("validation", ["user_id", "video_id", target]),
         warm_items,

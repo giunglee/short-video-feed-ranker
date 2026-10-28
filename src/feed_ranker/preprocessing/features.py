@@ -1,4 +1,9 @@
-"""Fit entity features from training events and explicitly supplied snapshots."""
+"""Fit user/item feature lookups from training events and optional snapshots.
+
+Public field definitions: https://kuairand.com/. Categorical vocabularies use
+training entities only. Snapshot historical availability is unverified; monthly
+statistics and outcomes are excluded. Runtime lookup lives in data.entity_features.
+"""
 
 from typing import Any
 
@@ -6,8 +11,28 @@ import numpy as np
 import pandas as pd
 import torch
 
-from feed_ranker.data.feature_tables import FeatureTables
-from feed_ranker.preprocessing.metadata import ANONYMOUS, MetadataEncoding
+from feed_ranker.data.entity_features import EntityFeatureLookup
+
+ANONYMOUS = tuple(f"onehot_feat{i}" for i in range(18))
+
+
+def _snapshot_rows(frame: pd.DataFrame, key: str) -> pd.DataFrame:
+    if frame[key].duplicated().any():
+        raise ValueError("Metadata entity keys must be unique")
+    if frame[key].isna().any():
+        raise ValueError("Metadata entity keys cannot be null")
+    return frame.set_index(key).sort_index()
+
+
+def _encode_categories(training: pd.Series, values: pd.Series) -> tuple[np.ndarray, int]:
+    """Fit compact embedding codes; reserve zero for null/sentinel/unseen values."""
+    valid = training.dropna()
+    if not np.isfinite(valid.to_numpy(dtype=float)).all() or (valid % 1 != 0).any():
+        raise ValueError("Categorical snapshot values must be finite integers or null")
+    vocabulary = np.sort(valid.loc[valid.ne(-124)].unique()).astype(np.int64)
+    # Raw zero is a legitimate category; it is distinct from encoded unknown zero.
+    category_codes = pd.Index(vocabulary).get_indexer(values) + 1
+    return np.r_[0, category_codes], len(vocabulary) + 1
 
 
 def _duration_columns(values: np.ndarray) -> dict[str, np.ndarray]:
@@ -22,39 +47,48 @@ def _duration_columns(values: np.ndarray) -> dict[str, np.ndarray]:
     }
 
 
-def fit_features(
+def fit_entity_features(
     train: pd.DataFrame, basic: pd.DataFrame | None = None, profiles: pd.DataFrame | None = None
-) -> FeatureTables:
-    users = np.sort(train.user_id.unique()).astype(np.int64)
-    warm_items = np.sort(train.video_id.unique()).astype(np.int64)
-    if not len(users) or not len(warm_items):
+) -> EntityFeatureLookup:
+    """Materialize attributes once per entity, independently of model input selection.
+
+    Snapshot-only items have lookup rows but retain item_code=0. Their metadata
+    can still be known. Fitting uses no validation events or outcome columns.
+    """
+    user_ids = np.sort(train.user_id.unique()).astype(np.int64)
+    warm_item_ids = np.sort(train.video_id.unique()).astype(np.int64)
+    if not len(user_ids) or not len(warm_item_ids):
         raise ValueError("Training events cannot be empty")
     if (basic is None) != (profiles is None):
         raise ValueError("Provide both item and user snapshots, or neither")
-    metadata = None if basic is None else MetadataEncoding.fit(users, warm_items, basic, profiles)
-    items = warm_items if metadata is None else np.union1d(warm_items, metadata.videos)
+    item_ids = warm_item_ids
+    if basic is not None and profiles is not None:
+        basic = _snapshot_rows(basic, "video_id")
+        profiles = _snapshot_rows(profiles, "user_id").reindex(user_ids)
+        item_ids = np.union1d(warm_item_ids, basic.index.to_numpy(dtype=np.int64))
+
     columns = {
-        "user_code": np.arange(len(users) + 1, dtype=np.int64),
-        "item_code": np.r_[0, pd.Index(warm_items).get_indexer(items) + 1],
+        "user_code": np.arange(len(user_ids) + 1, dtype=np.int64),
+        "item_code": np.r_[0, pd.Index(warm_item_ids).get_indexer(item_ids) + 1],
     }
     entities = {"user_code": "user", "item_code": "item"}
-    vocab_sizes = {"user_code": len(users) + 1, "item_code": len(warm_items) + 1}
+    vocab_sizes = {"user_code": len(user_ids) + 1, "item_code": len(warm_item_ids) + 1}
     descriptions: dict[str, dict[str, Any]] = {
         "user_code": {"missing": "zero OOV"},
         "item_code": {"missing": "zero OOV"},
     }
-
     medians = train.loc[train.duration_ms.gt(0)].groupby("video_id").duration_ms.median()
     duration_sources = {
         "train_duration": (
-            np.r_[0, medians.reindex(items).fillna(0)].astype(np.float32),
+            np.r_[0, medians.reindex(item_ids).fillna(0)].astype(np.float32),
             "train-fitted item median",
         )
     }
-    if metadata is not None:
-        rows = pd.Index(metadata.videos).get_indexer(items) + 1
+    if basic is not None:
+        duration = basic.video_duration.reindex(item_ids).to_numpy(dtype=np.float64)
+        duration = np.where(np.isfinite(duration) & (duration > 0), duration, 0)
         duration_sources["metadata_duration"] = (
-            np.r_[0, metadata.basic_duration[rows]].astype(np.float32),
+            np.r_[0, duration].astype(np.float32),
             "snapshot; historical availability unverified",
         )
     duration_descriptions = {
@@ -74,20 +108,20 @@ def fit_features(
             descriptions[name] = {**duration_descriptions[suffix], "availability": availability}
         vocab_sizes[f"{prefix}_band"] = 5
 
-    if metadata is not None:
-        columns["author_code"] = np.r_[0, metadata.author_codes[rows]]
+    if basic is not None and profiles is not None:
+        columns["author_code"], vocab_sizes["author_code"] = _encode_categories(
+            basic.author_id.reindex(warm_item_ids), basic.author_id.reindex(item_ids)
+        )
         entities["author_code"] = "item"
-        vocab_sizes["author_code"] = len(metadata.author_vocabulary) + 1
         descriptions["author_code"] = {
             "missing": "zero OOV",
             "availability": "snapshot; historical availability unverified",
         }
-        for i, name in enumerate(ANONYMOUS):
-            columns[name] = metadata.anonymous_codes[:, i].copy()
+        for name in ANONYMOUS:
+            columns[name], vocab_sizes[name] = _encode_categories(profiles[name], profiles[name])
             entities[name] = "user"
-            vocab_sizes[name] = len(metadata.anonymous_vocabularies[i]) + 1
             descriptions[name] = {
                 "missing": "zero null/sentinel/OOV",
                 "availability": "anonymous snapshot; historical availability unverified",
             }
-    return FeatureTables(users, items, columns, entities, vocab_sizes, descriptions)
+    return EntityFeatureLookup(user_ids, item_ids, columns, entities, vocab_sizes, descriptions)

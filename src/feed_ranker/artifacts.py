@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from feed_ranker.data.feature_tables import FeatureTables
+from feed_ranker.data.entity_features import EntityFeatureLookup
 from feed_ranker.models.ranking import DeepConfig, DeepModel
 from feed_ranker.models.recall import BPRMF, SparseCosineCooccurrence
 from feed_ranker.persistence import sha256, write_json
@@ -24,7 +24,7 @@ KINDS = ("deep", "mf", "popularity", "cosine")
 @dataclass
 class RankerArtifact:
     model: DeepModel
-    feature_state: FeatureTables
+    feature_state: EntityFeatureLookup
     identity: str
     provenance: dict[str, Any]
     kind: ClassVar[str] = "deep"
@@ -176,7 +176,7 @@ def load_artifact(path: Path) -> ModelArtifact:
     identity, provenance = sha256(path / "manifest.json"), manifest["provenance"]
     with torch.random.fork_rng(devices=[]):
         if kind == "deep":
-            tables = FeatureTables.load(path)
+            tables = EntityFeatureLookup.load(path)
             config = DeepConfig(**manifest["model_config"])
             if manifest["output_schema"] != {
                 config.output: {"dtype": "float32", "shape": ["B"], "meaning": "binary logit"}

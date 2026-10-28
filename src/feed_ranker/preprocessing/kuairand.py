@@ -14,7 +14,7 @@ import pandas as pd
 
 from feed_ranker.data.prepared import VERSION, PreparedDataset
 from feed_ranker.persistence import sha256, write_json
-from feed_ranker.preprocessing.features import fit_features
+from feed_ranker.preprocessing.features import fit_entity_features
 
 TRAIN_END = 1651161600000  # 2022-04-29 00:00 UTC+8, exclusive
 VAL_END = 1651420800000  # 2022-05-02 00:00 UTC+8, exclusive
@@ -145,7 +145,7 @@ def prepare_kuairand(
         for target in targets:
             if target not in frame or not frame[target].isin([0, 1]).all():
                 raise ValueError(f"{target}: expected observed binary targets")
-    state = fit_features(
+    state = fit_entity_features(
         train,
         None if basic is None else pd.read_csv(basic),
         None if profiles is None else pd.read_csv(profiles),

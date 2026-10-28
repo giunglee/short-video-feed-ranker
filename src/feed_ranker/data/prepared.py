@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from feed_ranker.data.feature_tables import FeatureTables
+from feed_ranker.data.entity_features import EntityFeatureLookup
 from feed_ranker.persistence import sha256
 
 VERSION = "kuairand-prepared-v3"
@@ -53,10 +53,10 @@ class PreparedDataset:
             raise ValueError("Require unique event/target columns")
         return pd.read_parquet(self.path / (name + ".parquet"), columns=columns)
 
-    def load_feature_state(self) -> FeatureTables:
+    def load_feature_state(self) -> EntityFeatureLookup:
         for name in ("feature-state.npz", "feature-tables.json"):
             self._check(name)
-        return FeatureTables.load(self.path)
+        return EntityFeatureLookup.load(self.path)
 
     def validate(self) -> None:
         self.load_feature_state()

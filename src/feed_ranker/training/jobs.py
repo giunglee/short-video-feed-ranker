@@ -127,8 +127,8 @@ def fit_recall_job(
     if target not in data.manifest["targets"]:
         raise ValueError("Recall target must be a prepared target")
     state = data.load_feature_state()
-    users = state.users
-    items = state.items[state.columns["item_code"][1:] > 0]
+    users = state.user_ids
+    items = state.item_ids[state.columns["item_code"][1:] > 0]
     train = data.read_split("train", ["user_id", "video_id", target])
     positive, negative = histories(train, users, items, target)
     cosine = SparseCosineCooccurrence(positive, len(items))
