@@ -17,8 +17,8 @@ import numpy as np
 import pandas as pd
 
 from feed_ranker.artifacts import load_artifact
-from feed_ranker.data.instances import EventDataset, make_loader
-from feed_ranker.data.prepared import PreparedDataset
+from feed_ranker.data.dataset import EventDataset, make_loader
+from feed_ranker.data.parquet import ParquetReader
 from feed_ranker.evaluation.funnel import WindowBenchmark, evaluate_pipeline, open_benchmark
 from feed_ranker.evaluation.metrics import binary_metrics
 from feed_ranker.evaluation.predictions import PredictionEvaluator, evaluate_predictions
@@ -33,7 +33,7 @@ CHANNELS = {"popularity": "popularity", "cooccurrence": "cosine", "mf": "mf"}
 
 
 def frozen_recall(
-    data: PreparedDataset,
+    data: ParquetReader,
     benchmark: WindowBenchmark,
     directory: Path,
     seed: int,
@@ -51,7 +51,7 @@ def frozen_recall(
         fit_recall_job(data.path, directory / "recall", epochs=epochs, seed=seed)
         cache_dir = directory / "candidates"
         cache_dir.mkdir()
-        fitted = [load_retriever(directory / "recall" / kind) for kind in CHANNELS.values()]
+        fitted = [load_retriever(directory / "recall/models" / kind) for kind in CHANNELS.values()]
         for retriever in fitted:
             benchmark.cache(retriever, cache_dir / f"{retriever.name}.parquet")
         manifest = {
@@ -79,7 +79,7 @@ def frozen_recall(
         if actual != manifest["files"]:
             raise ValueError("Frozen recall files changed or are incomplete")
         for name in CHANNELS:
-            artifact = load_artifact(source / "recall" / CHANNELS[name])
+            artifact = load_artifact(source / "recall/models" / CHANNELS[name])
             if artifact.identity != manifest["artifacts"][name]:
                 raise ValueError("Recall artifact identity mismatch")
             provenance = artifact.provenance
@@ -211,7 +211,7 @@ def run_study(
     if config["training"].get("device", "cpu") != "cpu":
         raise ValueError("This study requires CPU for exact exported-scorer checks")
     data_path = Path(config["data"])
-    data = PreparedDataset(data_path)
+    data = ParquetReader(data_path)
     data.validate()
     # Validate every recipe before fitting recall or creating output directories.
     jobs = {}
@@ -225,7 +225,7 @@ def run_study(
                 "loading": config.get("loading", {}),
             }
         )
-        job.training.optimizer.validate()
+        job.optimizer.validate()
         jobs[recipe["name"]] = job
     benchmark = open_benchmark(data_path)
     validation = data.read_split("validation")
@@ -258,9 +258,7 @@ def run_study(
                 ),
             )
             ranker = load_ranker(run_dir / "model")
-            instances = EventDataset(
-                validation, ranker.fitted.feature_state, job.model.feature_names, ("long_view",)
-            )
+            instances = EventDataset(validation, job.model.feature_names, ("long_view",))
             records = PredictionEvaluator({"long_view": "long_view"}).collect(
                 ranker.fitted.model, make_loader(instances, job.eval_batch_size)
             )

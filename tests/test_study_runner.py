@@ -17,6 +17,7 @@ from test_kuairand_workflow import configuration
 from test_prepared_data import raw_fixture
 
 from experiments.kuairand import run_study, summarize
+from experiments.review_kuairand import replay_scores
 from feed_ranker.preprocessing.kuairand import prepare_kuairand
 from feed_ranker.training.jobs import job_config
 
@@ -65,7 +66,10 @@ class StudyRunnerTests(unittest.TestCase):
                 self.assertEqual(a["pipeline"], b["pipeline"])
             for checkpoint in ("best.pt", "last.pt"):
                 a, b = [
-                    torch.load(root / folder / "seed42/reference" / checkpoint, weights_only=True)
+                    torch.load(
+                        root / folder / "seed42/reference/checkpoints" / checkpoint,
+                        weights_only=True,
+                    )
                     for folder in ("resumed", "continuous")
                 ]
                 for name in a["model"]:
@@ -132,6 +136,33 @@ class StudyRunnerTests(unittest.TestCase):
                 self.assertEqual(
                     set(resolved.model.feature_names), set(recipe["model"]["features"])
                 )
+
+    def test_scoring_replay_checks_actual_models_channels_and_prediction_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prepare_kuairand(raw_fixture(root), root / "data", users=0, train_end=10, val_end=15)
+            config = configuration(root / "data")
+            model = config.pop("model")
+            config.update(
+                seeds=[43], mf_epochs=1, recipes=[{"name": "reference", "model": model}], budget=50
+            )
+            archive = root / "archive"
+            run_study(config, archive / "run43")
+            (archive / "study_config.json").write_text(json.dumps(config))
+            with (
+                patch("experiments.review_kuairand.SEEDS", (43,)),
+                patch("experiments.kuairand.fit_recall_job", side_effect=AssertionError("refit")),
+            ):
+                result = replay_scores(archive, root / "data", root / "replay")
+                self.assertEqual(result["verification"]["candidate_exports_exact"], 5)
+                self.assertEqual(result["verification"]["source_caches_exact"], 3)
+                self.assertTrue(result["verification"]["paired_summaries_exact"])
+                pred_path = archive / "run43/seed43/reference/predictions.parquet"
+                predictions = pd.read_parquet(pred_path)
+                predictions.loc[0, "logit"] += 1.0
+                predictions.to_parquet(pred_path, index=False)
+                with self.assertRaises(AssertionError):
+                    replay_scores(archive, root / "data", root / "bad-prediction")
 
     def test_summary_pairs_by_seed_and_excludes_undefined_values(self) -> None:
         config = {

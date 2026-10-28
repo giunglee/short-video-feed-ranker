@@ -1,0 +1,278 @@
+{
+  "merged_architecture": "3d96c3d490a217b8f534b67d17d531fba3eda67f",
+  "pre_rebase_study": "772fc48c33f534a020598673c616e6da11c9d4bd",
+  "saved_model_training_source": "e520e3fe1347104badea0377df92a9aa52c5b819",
+  "environment": {
+    "python": "3.12.13",
+    "torch": "2.8.0",
+    "numpy": "2.5.3",
+    "pandas": "2.3.3",
+    "pyarrow": "21.0.0"
+  },
+  "preparation": {
+    "rows": {
+      "train": 4962447,
+      "validation": 839905
+    },
+    "feature_columns_exact": 27,
+    "source_and_split_exact": true,
+    "feature_state_exact": true,
+    "materialized_values_exact": true,
+    "data_identity": "4dd16342a064895da52aa018e08275d2fecfa43f4928bb244544ec18984651d8"
+  },
+  "fresh_training_fixture_parity": {
+    "seeds": [
+      43,
+      44
+    ],
+    "recipes": 6,
+    "fits": 12,
+    "epochs_per_fit": 3,
+    "mf_epochs": 2,
+    "captured_arrays_exact": 1248,
+    "histories_excluding_timings_exact": true,
+    "optimizer_and_rng_exact": true,
+    "five_pipeline_metrics_exact": true,
+    "paired_summaries_exact": true
+  },
+  "saved_run_audit": {
+    "complete_fits": 24,
+    "epochs_per_fit": 30,
+    "prediction_exports": 24,
+    "candidate_exports_exact": 120,
+    "all_retrieval_metrics_exact": true
+  },
+  "current_code_scoring_replay": {
+    "model_prediction_exports_exact": 24,
+    "validation_rows_per_model": 839905,
+    "source_caches_exact": 12,
+    "candidate_exports_exact": 120,
+    "ranking_traces_and_per_user_metrics_exact": true,
+    "paired_summaries_exact": true,
+    "new_training": false
+  },
+  "published_summaries_exact": true,
+  "combined_minus_reference": [
+    {
+      "group": "primary",
+      "recipe": "combined",
+      "reference": "reference",
+      "metric": "long_view/roc_auc",
+      "seeds": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "values": [
+        0.7307213799254533,
+        0.7305602587184812,
+        0.7309679535971265,
+        0.7308310370746814
+      ],
+      "paired_differences": [
+        0.03973812509372221,
+        0.037191279740922956,
+        0.03839489625043657,
+        0.03256413666974056
+      ],
+      "mean": 0.7307701573289356,
+      "sample_sd": 0.0001724976994179979,
+      "defined_seeds": 4,
+      "paired_mean": 0.036972109438705575,
+      "paired_sample_sd": 0.0031173399166994874,
+      "paired_defined_seeds": 4
+    },
+    {
+      "group": "primary",
+      "recipe": "combined",
+      "reference": "reference",
+      "metric": "long_view/macro_user_auc",
+      "seeds": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "values": [
+        0.5982592215849658,
+        0.5988043799793814,
+        0.6000653901961011,
+        0.6004462064336218
+      ],
+      "paired_differences": [
+        0.06355574875616687,
+        0.06256469565116185,
+        0.06269396502314295,
+        0.06228497857539328
+      ],
+      "mean": 0.5993937995485175,
+      "sample_sd": 0.001031710042210552,
+      "defined_seeds": 4,
+      "paired_mean": 0.06277484700146624,
+      "paired_sample_sd": 0.0005478698476250166,
+      "paired_defined_seeds": 4
+    },
+    {
+      "group": "primary",
+      "recipe": "combined",
+      "reference": "reference",
+      "metric": "rrf_all/ndcg",
+      "seeds": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "values": [
+        0.547393635114693,
+        0.5458414447594894,
+        0.5451764206929591,
+        0.5418064143421412
+      ],
+      "paired_differences": [
+        0.013860958844443716,
+        0.01375364639685872,
+        0.0037759531755305886,
+        0.004006863047787079
+      ],
+      "mean": 0.5450544787273207,
+      "sample_sd": 0.0023562512764719627,
+      "defined_seeds": 4,
+      "paired_mean": 0.008849355366155026,
+      "paired_sample_sd": 0.005725888041131594,
+      "paired_defined_seeds": 4
+    }
+  ],
+  "reference_ranker_channel_comparisons": [
+    {
+      "merge": "rr_all",
+      "single": "popularity",
+      "seeds": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "paired_values": [
+        0.006438635309278351,
+        0.008023286566203991,
+        0.011122366896019198,
+        0.006068796788356257
+      ],
+      "paired_mean": 0.007913271389964449,
+      "paired_sample_sd": 0.0023012341205262566,
+      "positive_seeds": 4
+    },
+    {
+      "merge": "rr_all",
+      "single": "cooccurrence",
+      "seeds": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "paired_values": [
+        0.0029237746314588753,
+        0.0064841115301398355,
+        0.004760294403593157,
+        0.0029789421444252895
+      ],
+      "paired_mean": 0.004286780677404289,
+      "paired_sample_sd": 0.0016951602908379297,
+      "positive_seeds": 4
+    },
+    {
+      "merge": "rr_all",
+      "single": "mf",
+      "seeds": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "paired_values": [
+        0.02474907315878061,
+        0.023322751247928708,
+        0.0156572660912917,
+        0.02183945053738623
+      ],
+      "paired_mean": 0.02139213525884681,
+      "paired_sample_sd": 0.0040035453241970284,
+      "positive_seeds": 4
+    },
+    {
+      "merge": "rrf_all",
+      "single": "popularity",
+      "seeds": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "paired_values": [
+        0.005947417511914632,
+        0.007820601710626374,
+        0.01085955059871524,
+        0.0063071594449005675
+      ],
+      "paired_mean": 0.007733682316539203,
+      "paired_sample_sd": 0.0022363897211153546,
+      "positive_seeds": 4
+    },
+    {
+      "merge": "rrf_all",
+      "single": "cooccurrence",
+      "seeds": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "paired_values": [
+        0.0024325568340951564,
+        0.006281426674562218,
+        0.004497478106289199,
+        0.0032173048009696004
+      ],
+      "paired_mean": 0.0041071916039790435,
+      "paired_sample_sd": 0.0016808650382777856,
+      "positive_seeds": 4
+    },
+    {
+      "merge": "rrf_all",
+      "single": "mf",
+      "seeds": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "paired_values": [
+        0.02425785536141689,
+        0.02312006639235109,
+        0.015394449793987741,
+        0.02207781319393054
+      ],
+      "paired_mean": 0.021212546185421566,
+      "paired_sample_sd": 0.00397959268993177,
+      "positive_seeds": 4
+    }
+  ],
+  "validation": {
+    "public_fixture_tests": 70,
+    "ruff_lint_and_format": "pass",
+    "independent_standards_review": "no blockers",
+    "independent_spec_review": "no findings"
+  },
+  "limitations": [
+    "Scoring replay of all 24 saved selected models, not a new full-data training run.",
+    "Fresh-training parity uses public fixtures; historical 720-epoch training evidence is preserved.",
+    "Reused validation and previously explored feature comparisons; no new independent holdout.",
+    "Snapshot historical availability remains unverified.",
+    "Warm observed-window candidates, not full-catalog next-watch evaluation.",
+    "May 2\u20138 remains unscored.",
+    "Exact replay uses recorded numerical dependency versions; PyTorch 2.15/NumPy 2.4.6 produced a 5.6e-17 cohort mean difference on saved logits."
+  ]
+}

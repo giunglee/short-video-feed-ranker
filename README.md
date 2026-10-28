@@ -32,6 +32,7 @@ and BPR MF provide candidates for retrieval, merging and ranking.
   [ranking comparisons](docs/ranking_architecture.md), and
   [feature ablations](docs/ranking_features.md).
 - [KuaiRand matched-seed recall and feature study](docs/kuairand_confirmation.md).
+- [Architecture regression: 24 fits, input/recall parity and ranking diagnostics](docs/kuairand_refactor_regression.md).
 - [Retrieval findings](docs/recall_decisions.md) and
   [retrieval/ranking trade-offs](docs/recall_rank.md).
 

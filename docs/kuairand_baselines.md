@@ -5,14 +5,13 @@ Review [the module interfaces](kuairand_workflow.md#interface-index) first, then
 data, training jobs, fitted artifacts and evaluation. It defines no model,
 preprocessor, optimizer, loss or metric implementation.
 
-Merge order: **#30 (architecture) → #10 (this study)**. The study PR is based on
-`refactor/kuairand-production` for review. After #30 is merged, retarget #10 to
-`main`; if #30 was squash-merged, replay only the study commit onto that new main
-before merging #10. Do not merge the old experiment branch first.
+The shared architecture from #30 is merged into `main` at `3d96c3d`. This study
+is rebased onto that revision and uses its materialized-data, explicit training
+and structured artifact interfaces. Package source remains unchanged.
 
 ## Prepare and run
 
-These commands describe the migrated workflow, not a new authorized experiment.
+These commands reproduce the migrated workflow.
 Run from the checkout with the package installed. Choose fresh output directories;
 preparation and training never overwrite existing runs.
 
@@ -70,10 +69,13 @@ exposure-conditional diagnostics, not full-catalog next-watch performance.
 Each study writes:
 
 - `config.json`, `data_manifest.json`, `provenance.json`, `source/`.
-- `seedN/recall/`, `candidates/`, `recall_manifest.json`: fitted scorers, checkpoint,
-  history, candidate caches and hashes covering all recall/cache files.
-- `seedN/recipe/`: complete epoch history, best/last checkpoints, fitted model,
-  keyed `predictions.parquet`, and five funnel reports with per-user metrics/traces.
+- `seedN/recall/models/{popularity,cosine,mf}/`: fitted retrieval scorers.
+  `recall/checkpoints/mf.pt` and `recall/history.json` record fixed-budget fitting.
+- `seedN/candidates/`, `recall_manifest.json`: frozen source scores and hashes
+  covering every recall/cache file.
+- `seedN/recipe/`: complete epoch history, `checkpoints/{best,last}.pt`, fitted
+  `model/` with separate config/weights/features, keyed `predictions.parquet`,
+  and five funnel reports with per-user metrics/traces.
 - `runs.json`, `summary.json`: per-seed event/cohort and funnel metrics, coverage,
   training-prevalence baseline, primary/replication summaries, mean/sample SD and
   seed-aligned paired differences with mean/sample SD. Undefined metrics stay null;
@@ -99,9 +101,13 @@ python -m experiments.kuairand --config extended.json \
 Recall reuse checks prepared-data identity, seed, target, MF budget, fitted scorer
 identity/provenance and every saved recall/cache hash. Continuation also checks the
 whole study configuration except the epoch cap, then delegates optimizer/RNG and
-selected-checkpoint restoration to the shared Trainer. It reuses original recall;
-MF is not retrained. Reuse/continuation require outputs from this runner, not the
-historical bundle format. The supplied study configurations use CPU; this runner
+continuation to the shared Trainer; the job explicitly restores selected weights
+before exporting. It reuses original recall;
+MF is not retrained. New runs require prepared-v4 data and the current output
+layout. Regenerate older prepared-v3 data into a fresh directory; its changed
+identity intentionally prevents recall reuse across preparation versions.
+Pre-refactor training checkpoints require their original code. Scoring replay
+can still load existing fitted-scorer-v2/v3/v4 packages; new exports use v5. The supplied study configurations use CPU; this runner
 requires CPU for exact reload/continuation checks.
 
 ## Historical evidence
@@ -112,5 +118,7 @@ figures and result JSON remain evidence from
 [`033fdc9`](https://github.com/giunglee/short-video-feed-ranker/tree/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5).
 Use that pinned checkout for the original commands/checkpoints. The architecture
 changes Deep input ordering and the new runner does not claim identical historical
-weights or metrics. No real-data rerun is included in this migration. The original
-validation reuse and adaptive-ablation disclosures still apply.
+weights or metrics. The [refactor regression](kuairand_refactor_regression.md) reruns
+all six arms over seeds 43–46 and separates exact input/recall parity from changed
+ranking trajectories. The original validation reuse and adaptive-ablation
+disclosures still apply.
