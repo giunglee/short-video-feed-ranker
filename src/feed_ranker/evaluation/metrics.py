@@ -1,95 +1,90 @@
-"""Sampled concordance excludes label ties and gives prediction ties half credit.
-
-Global XAUC weights comparable ordered row pairs uniformly. User concordance
-weights eligible users equally. Neither metric uses the model's random generator.
-"""
+"""Exact event-level binary metrics for logits, separate from watch-ratio metrics."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
+import pandas as pd
 import torch
 
 
-def xauc(
-    preds: torch.Tensor,
-    labels: torch.Tensor,
-    num_pairs: int = 100_000,
-    seed: int = 0,
-) -> float | None:
-    """Return None when no unequal-label pair exists; otherwise sample with replacement."""
-    predictions, targets = _metric_arrays(preds, labels, num_pairs)
-    pairs = _sample_unequal_pairs(targets, num_pairs, seed)
-    if pairs is None:
-        return None
-    left, right = pairs
-    tied = predictions[left] == predictions[right]
-    concordant = (predictions[left] > predictions[right]) == (targets[left] > targets[right])
-    return float(np.where(tied, 0.5, concordant.astype(float)).mean())
-
-
-def user_xauc(
-    preds: torch.Tensor,
-    labels: torch.Tensor,
-    users: torch.Tensor,
-    num_pairs: int = 256,
-    seed: int = 0,
-) -> dict[str, float | int | None]:
-    """Macro-average per-user XAUC; count users without comparable labels as excluded."""
-    predictions, targets = _metric_arrays(preds, labels, num_pairs)
-    user_ids = users.detach().cpu().numpy().reshape(-1)
-    if len(user_ids) != len(targets) or not np.isfinite(user_ids).all():
-        raise ValueError("User IDs must be finite and aligned with metric inputs")
-    if (user_ids != np.floor(user_ids)).any():
-        raise ValueError("User IDs must be integers")
-
-    order = np.argsort(user_ids, kind="stable")
-    unique_users, starts, counts = np.unique(user_ids[order], return_index=True, return_counts=True)
-    predictions_tensor = torch.from_numpy(predictions)
-    targets_tensor = torch.from_numpy(targets)
-    scores: list[float] = []
-    for user, start, count in zip(unique_users, starts, counts):
-        indices = torch.from_numpy(order[start : start + count])
-        user_seed = (seed + int(user)) % (2**32)
-        score = xauc(predictions_tensor[indices], targets_tensor[indices], num_pairs, user_seed)
-        if score is not None:
-            scores.append(score)
+def binary_metrics(labels: np.ndarray, logits: np.ndarray) -> dict[str, Any]:
+    """ROC AUC uses average ranks for ties; undefined one-class AUC is None."""
+    labels = np.asarray(labels, dtype=np.float64)
+    logits = np.asarray(logits, dtype=np.float64)
+    if (
+        labels.ndim != 1
+        or labels.shape != logits.shape
+        or not len(labels)
+        or not np.isin(labels, [0, 1]).all()
+        or not np.isfinite(logits).all()
+    ):
+        raise ValueError("Require aligned nonempty binary labels and finite logits")
+    probability = torch.sigmoid(torch.from_numpy(logits)).numpy()
+    positives = int(labels.sum())
+    negatives = len(labels) - positives
+    ranks = pd.Series(logits).rank(method="average").to_numpy()
+    auc = (
+        ((ranks[labels == 1].sum() - positives * (positives + 1) / 2) / (positives * negatives))
+        if positives and negatives
+        else None
+    )
     return {
-        "user_xauc": float(np.mean(scores)) if scores else None,
-        "eligible_users": len(scores),
-        "excluded_users": len(unique_users) - len(scores),
+        "rows": len(labels),
+        "positive_rate": float(labels.mean()),
+        "mean_probability": float(probability.mean()),
+        "logloss": float((np.logaddexp(0, logits) - labels * logits).mean()),
+        "brier": float(np.square(probability - labels).mean()),
+        "roc_auc": None if auc is None else float(auc),
     }
 
 
-def _metric_arrays(
-    preds: torch.Tensor, labels: torch.Tensor, num_pairs: int
-) -> tuple[np.ndarray, np.ndarray]:
-    predictions = preds.detach().cpu().numpy().reshape(-1)
-    targets = labels.detach().cpu().numpy().reshape(-1)
-    if len(predictions) != len(targets):
-        raise ValueError("Predictions and labels must have the same number of rows")
-    if type(num_pairs) is not int or num_pairs <= 0:
-        raise ValueError("num_pairs must be a positive integer")
-    if not np.isfinite(predictions).all() or not np.isfinite(targets).all():
-        raise ValueError("Metric inputs must be finite")
-    return predictions, targets
+def user_auc_metrics(users: np.ndarray, labels: np.ndarray, logits: np.ndarray) -> dict[str, Any]:
+    """Equal-user ROC AUC; exclude one-class users and expose their count."""
+    if (
+        users.ndim != 1
+        or users.shape != labels.shape
+        or labels.shape != logits.shape
+        or users.dtype.kind not in "iu"
+        or (users < 0).any()
+    ):
+        raise ValueError("Require aligned nonnegative integer user IDs, labels and logits")
+    frame = pd.DataFrame({"user": users, "label": labels, "logit": logits})
+    aucs = []
+    for _, group in frame.groupby("user", sort=False):
+        value = binary_metrics(group.label.to_numpy(), group.logit.to_numpy())["roc_auc"]
+        if value is not None:
+            aucs.append(value)
+    return {
+        "macro_user_auc": float(np.mean(aucs)) if aucs else None,
+        "users_with_both_classes": len(aucs),
+        "users_all": int(frame.user.nunique()),
+    }
 
 
-def _sample_unequal_pairs(
-    labels: np.ndarray, num_pairs: int, seed: int
-) -> tuple[np.ndarray, np.ndarray] | None:
-    if len(labels) < 2:
-        return None
-    order = np.argsort(labels, kind="stable")
-    _, starts, counts = np.unique(labels[order], return_index=True, return_counts=True)
-    if len(counts) < 2:
-        return None
+def candidate_metrics(
+    ordered: np.ndarray,
+    positive: np.ndarray,
+    *,
+    k: int = 10,
+) -> dict[str, float | None]:
+    """Full warm-observed-pool denominators, including positives missed by retrieval.
 
-    rng = np.random.default_rng(seed)
-    # A label group of size k contributes k * (N-k) eligible ordered pairs.
-    weights = counts.astype(float) * (len(labels) - counts)
-    groups = rng.choice(len(counts), num_pairs, p=weights / weights.sum())
-    left = starts[groups] + (rng.random(num_pairs) * counts[groups]).astype(int)
-    right = (rng.random(num_pairs) * (len(labels) - counts[groups])).astype(int)
-    # Skip the selected label block instead of repeatedly rejecting tied labels.
-    right += (right >= starts[groups]) * counts[groups]
-    return order[left], order[right]
+    Empty returns score zero when positives exist; zero-positive queries are undefined.
+    The oracle can reorder only the returned candidates, with the same full-pool IDCG.
+    """
+    if k < 1 or len(np.unique(ordered)) != len(ordered):
+        raise ValueError("Require positive k and unique candidates")
+    total = len(np.unique(positive))
+    if not total:
+        return {"recall": None, "ndcg": None, "oracle_ndcg": None}
+    relevance = np.isin(ordered, positive)
+    discounts = 1 / np.log2(np.arange(2, k + 2))
+    ideal = discounts[: min(total, k)].sum()
+    hits = int(relevance.sum())
+    return {
+        "recall": hits / total,
+        "ndcg": float((relevance[:k] * discounts[: min(k, len(ordered))]).sum() / ideal),
+        "oracle_ndcg": float(discounts[: min(hits, k)].sum() / ideal),
+    }

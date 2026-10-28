@@ -1,81 +1,58 @@
 # short-video-feed-ranker
 
-A PyTorch study of short-video recommendation using public KuaiRec data.
-The focus is **modeling judgment: data quality, valid comparisons, failure analysis,
-and reproducible conclusions**. Educational; not affiliated with any employer.
+A PyTorch study of short-video recommendation using public KuaiRec and KuaiRand
+data. The focus is modeling judgment: valid comparisons, failure analysis and
+reproducible conclusions. Educational; not affiliated with any employer.
 
-## The question
+## Current implementation
 
-Can Wide & Deep trained on sparse interactions generalize to unseen user–video
-pairs, and which weighting, feature, and architecture choices improve it?
+[KuaiRand workflow and commands](docs/kuairand_workflow.md) is the entry point.
+Standard-tab-1 events train a Deep `long_view` ranker; popularity, sparse cosine
+and BPR MF provide candidates for retrieval, merging and ranking.
 
-## What we have learned
+- **Preprocessing:** [raw validation, splits and preparation](src/feed_ranker/preprocessing/kuairand.py),
+  [train-fitted features](src/feed_ranker/preprocessing/features.py).
+- **Data:** [prepared tables](src/feed_ranker/data/prepared.py),
+  [fitted feature lookup](src/feed_ranker/data/feature_tables.py), and
+  [instances/loaders](src/feed_ranker/data/instances.py).
+- **Models:** [Deep ranking](src/feed_ranker/models/ranking.py) and
+  [BPR / sparse cosine recall](src/feed_ranker/models/recall.py).
+- **Training:** [named objectives](src/feed_ranker/training/objectives.py) and
+  [updates, metrics and checkpoints](src/feed_ranker/training/trainer.py).
+- **Evaluator:** [prediction records and independent metrics](src/feed_ranker/evaluation/predictions.py).
+- **Recommendation:** [retrieval → ranking → trace](src/feed_ranker/recommendation/pipeline.py)
+  from [self-contained fitted artifacts](src/feed_ranker/artifacts.py).
 
-- **Clean observations before comparing models.** Remove complete duplicate events,
-  retain distinct-time repeats, and keep each user–video pair in one split.
-- **Inspect the label before choosing the objective.** Extreme watch ratios mix
-  short video durations with long play times. Start with raw-label MAE, then
-  explicitly test bounded utility using capped-label MAE.
-- **Measure generalization at the same checkpoint.** Compare validation with a
-  fixed training sample in evaluation mode, rather than training-time loss.
-- **Compare architectures without requiring a preferred winner.** In a bounded
-  five-seed study, Deep `[64, 32]` beat the selected Wide & Deep recipe on capped
-  user-XAUC. Its test advantage over Wide was consistent but small.
+[Raw EDA](docs/raw_audit.md) runs independently. The matched-seed study in
+[PR #10](https://github.com/giunglee/short-video-feed-ranker/pull/10) builds on these interfaces.
 
-## Evidence and next steps
+## Evidence
 
-1. **EDA — complete:** [label/feature findings](data/kuairec_eda_findings.md)
-   and [visual notebook](data/kuairec_eda.ipynb).
-2. **Training diagnostics — complete:** [settings, evidence, and budget rationale](docs/datasets.md#training-recipe-and-budget).
-3. **Ranking architecture comparison — complete:** [protocol, results, limitations,
-   and reproduction](docs/ranking_architecture.md). Four model families, 37 training
-   runs, and 20 frozen finalists; capped validation user-XAUC selects checkpoints.
+- [KuaiRec data findings](data/kuairec_eda_findings.md),
+  [ranking comparisons](docs/ranking_architecture.md), and
+  [feature ablations](docs/ranking_features.md).
+- [Retrieval findings](docs/recall_decisions.md) and
+  [retrieval/ranking trade-offs](docs/recall_rank.md).
 
-4. **Retrieval and final-feed integration — complete:** [recall methods](docs/recall_decisions.md)
-   and [frozen Deep funnel evaluation](docs/recall_rank.md). MF leads the retrieval
-   baselines across five matched seeds; standalone ranking gains do not guarantee
-   higher final-feed NDCG.
-5. **Deep feature ablations — complete:** [feature results and reproduction](docs/ranking_features.md).
-   Removing duration band while retaining log duration improved user-XAUC and
-   fixed-candidate feed NDCG across five seeds, with a small MAE regression.
-6. **Channel merging — exploratory:** [reusable composition and findings](docs/recall_channels.md).
-   MF-heavy allocation reduces merging losses; MF alone remains the quality reference.
+The rearchitecture retires superseded loaders, training paths, feature frameworks
+and experiment executables. Those historical studies remain reproducible from
+[their source revision](https://github.com/giunglee/short-video-feed-ranker/tree/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5); KuaiRec reports remain here; KuaiRand study evidence is carried by PR #10.
+Historical artifact readers also live in that pinned checkout; the active package
+loads current fitted artifacts. See the workflow guide for format and resume limits.
 
-**Limits:** the split tests pair generalization, not future-time prediction.
-Snapshot feature timing is unverified. Historical test-label inspection is
-explicitly disclosed. This repository studies offline modeling, not online serving.
+## Run and check
 
-## Review the implementation
+```sh
+python -m pip install -e '.[dev]'
+python -m feed_ranker.cli --help
+python -m ruff check src tests scripts experiments
+python -m ruff format --check src tests scripts experiments
+python -m unittest discover -s tests -v
+```
 
-- **Data contracts and preparation:** [schema](src/feed_ranker/data/schema.py),
-  [feature configuration](src/feed_ranker/features/config.py),
-  [preprocessor](src/feed_ranker/data/kuairec_preprocessor.py),
-  [loader](src/feed_ranker/data/kuairec_dataset.py).
-- **Model:** [Wide & Deep](src/feed_ranker/models/wide_deep.py) and its
-  [feature encoders](src/feed_ranker/models/components/feature_encoder.py).
-- **Training and diagnosis:** [trainer](src/feed_ranker/training/trainer.py),
-  [evaluation](src/feed_ranker/evaluation/ranking.py),
-  [metrics](src/feed_ranker/evaluation/metrics.py),
-  [cohort traces](src/feed_ranker/experiments/diagnostics.py).
-- **Recommendation:** [pipeline and contracts](src/feed_ranker/recommendation),
-  [inference adapters](src/feed_ranker/inference), [candidate features](src/feed_ranker/features/kuairec.py),
-  [funnel evaluator](src/feed_ranker/evaluation/funnel.py).
-- **Experiments:** [architecture construction](src/feed_ranker/experiments/ranking_architecture.py)
-  and [bounded study](src/feed_ranker/experiments/ranking_study.py).
+[Dataset downloads](data/README.md). No real-data training or final-window scoring
+is required by the software checks. Snapshot feature timing remains unverified;
+software correctness does not establish model quality, 27K scale or online latency.
+Future model families require their own experiment question and protocol.
 
-## Future directions
-
-- **Next:** channel-merging experiments, separate from the frozen ranking comparisons.
-- **Later:** multi-task ranking, DIN/SASRec-style behavior modeling, graph-based
-  recommendation, and incremental-value modeling.
-- These are research directions, not implemented capabilities. Each becomes an
-  experiment only after defining its question, baseline, and evaluation protocol.
-
-## Run and reproduce
-
-- [Setup, training commands, and checks](data/README.md).
-- [Data protocol and frozen training recipe](docs/datasets.md).
-- [Progress](docs/milestones.md). Retrieval and funnel evaluation are a separate milestone.
-
-Reference: [Wide & Deep, Cheng et al.](https://arxiv.org/abs/1606.07792).
 Code: [MIT](LICENSE); datasets retain their authors' licenses.

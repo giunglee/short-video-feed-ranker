@@ -1,235 +1,167 @@
-"""Linear capped-gain NDCG on fixed, observed held-out user-item pools.
-
-The full eligible pool determines IDCG, even for short candidate lists. Labels
-never enter prediction inputs or candidate ordering. This is an offline exposure-
-conditional metric, not a temporal or causal estimate of recommendation utility.
-"""
+"""KuaiRand observed-window retrieval/ranking evaluation; labels stay outside inference."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from feed_ranker.recommendation.contracts import Recommendation, Request
-from feed_ranker.recommendation.ordering import ordered_positions, tie_keys
+from feed_ranker.data.prepared import PreparedDataset
+from feed_ranker.evaluation.metrics import candidate_metrics
+from feed_ranker.persistence import write_json
+from feed_ranker.recommendation.contracts import (
+    CandidateScope,
+    Ranker,
+    Recommendation,
+    Request,
+    Retriever,
+)
+from feed_ranker.recommendation.pipeline import RecommendationPipeline
+from feed_ranker.recommendation.replay import ReplayRetriever, ScoreTable
+from feed_ranker.recommendation.traces import RecommendationTrace
 
 
-@dataclass
-class GainPool:
-    """One immutable first-event gain per eligible pair, grouped by raw user."""
+class WindowBenchmark:
+    """KuaiRand warm observed-window candidates and positive-ever pair relevance."""
 
-    users: np.ndarray
-    items: np.ndarray
-    offsets: np.ndarray
-    ratios: np.ndarray
-    duration_ms: np.ndarray
-    k: int = 10
-    cap: float = 2.0
-
-    def __post_init__(self) -> None:
-        n = len(self.items)
-        if (
-            self.k <= 0
-            or not np.isfinite(self.cap)
-            or self.cap <= 0
-            or self.offsets.shape != (len(self.users) + 1,)
-            or self.offsets[0] != 0
-            or self.offsets[-1] != n
-            or (np.diff(self.offsets) < 0).any()
-            or self.ratios.shape != (n,)
-            or self.duration_ms.shape != (n,)
-            or not np.isfinite(self.ratios).all()
-            or (self.ratios < 0).any()
-        ):
-            raise ValueError("Invalid gain pool, offsets, or nonnegative finite ratios")
-        self.gains = np.minimum(self.ratios, self.cap)
-        self.discounts = 1 / np.log2(np.arange(2, self.k + 2))
-        self.ties = np.empty(n, dtype=np.uint64)
-        self.ideals = np.empty(len(self.users))
-        for u, user in enumerate(self.users):
-            lo, hi = self.offsets[u : u + 2]
-            if len(np.unique(self.items[lo:hi])) != hi - lo:
-                raise ValueError("Duplicate item within user pool")
-            self.ties[lo:hi] = tie_keys(int(user), self.items[lo:hi])
-            self.ideals[u] = self.dcg(np.sort(self.gains[lo:hi])[::-1])
-
-    def dcg(self, gains: np.ndarray) -> float:
-        return float(np.dot(gains[: self.k], self.discounts[: min(self.k, len(gains))]))
-
-    def order(self, scores: np.ndarray, positions: np.ndarray) -> np.ndarray:
-        users = np.searchsorted(self.offsets[1:], positions, side="right")
-        if not len(positions):
-            return positions
-        if not (users == users[0]).all():
-            raise ValueError("Ordering must stay within one query")
-        return positions[
-            ordered_positions(scores[positions], int(self.users[users[0]]), self.items[positions])
-        ]
-
-    def candidates(self, scores: np.ndarray, budget: int) -> list[np.ndarray]:
-        if scores.shape != self.items.shape or np.isnan(scores).any() or np.isposinf(scores).any():
-            raise ValueError("Candidate scores must match pool; only -inf marks unsupported")
-        return [
-            self.order(scores, np.arange(lo, hi))[:budget]
-            for lo, hi in zip(self.offsets[:-1], self.offsets[1:], strict=True)
-        ]
-
-    def evaluate(
-        self, predictions: np.ndarray, candidates: list[np.ndarray] | None = None
-    ) -> tuple[dict[str, float | int | None], pd.DataFrame]:
-        if predictions.shape != self.items.shape or not np.isfinite(predictions).all():
-            raise ValueError("Require finite predictions for every eligible pair")
-        if candidates is None:
-            candidates = [np.arange(lo, hi) for lo, hi in zip(self.offsets[:-1], self.offsets[1:])]
-        finals = [self.order(predictions, selected)[: self.k] for selected in candidates]
-        metrics, frame = self.evaluate_ordered(candidates, finals)
-        metrics["fraction_prediction_gt2"] = float((predictions > 2).mean())
-        return metrics, frame
-
-    def evaluate_ordered(
-        self,
-        candidates: list[np.ndarray],
-        finals: list[np.ndarray],
-    ) -> tuple[dict[str, float | int | None], pd.DataFrame]:
-        """Measure already executed recommendations; never score or reorder them."""
-        if len(candidates) != len(self.users) or len(finals) != len(self.users):
-            raise ValueError("Candidate/final query count differs from pool")
-        rows = []
-        for u, user in enumerate(self.users):
-            lo, hi = self.offsets[u : u + 2]
-            selected = candidates[u]
-            if (
-                (selected < lo).any()
-                or (selected >= hi).any()
-                or len(np.unique(selected)) != len(selected)
-            ):
-                raise ValueError("Candidates must be unique positions in this user's pool")
-            final = finals[u]
-            if (
-                len(final) != min(self.k, len(selected))
-                or len(np.unique(final)) != len(final)
-                or not np.isin(final, selected).all()
-            ):
-                raise ValueError("Final list must be a unique top-K subset of candidates")
-            ideal = self.ideals[u]
-            row = {
-                "user_id": int(user),
-                "pool_size": int(hi - lo),
-                "returned": len(selected),
-                "final_slots": len(final),
-                "idcg": ideal,
-                "cap2_ndcg10": self.dcg(self.gains[final]) / ideal if ideal else np.nan,
-                "candidate_oracle_ndcg10": self.dcg(np.sort(self.gains[selected])[::-1]) / ideal
-                if ideal
-                else np.nan,
-                "utility_per_slot10": float(self.gains[final].sum() / self.k),
-            }
-            rows.append(row)
-        frame = pd.DataFrame(rows)
-        eligible = frame.idcg.gt(0)
-        metrics = ["cap2_ndcg10", "candidate_oracle_ndcg10"]
-        result = {
-            name: float(frame.loc[eligible, name].mean()) if eligible.any() else None
-            for name in metrics
+    def __init__(
+        self, val: pd.DataFrame, items: np.ndarray, label: str, start: int, end: int
+    ) -> None:
+        self.queries: list[tuple[Request, CandidateScope]] = []
+        self.positive: dict[str, np.ndarray] = {}
+        self.all_positive: dict[str, int] = {}
+        self.coverage = {
+            "all_pairs": 0,
+            "warm_pairs": 0,
+            "all_positive_pairs": 0,
+            "warm_positive_pairs": 0,
         }
-        result.update(
-            {
-                "users_all": len(frame),
-                "users_quality": int(eligible.sum()),
-                "users_zero_idcg": int((~eligible).sum()),
-                "utility_per_slot10_all_users": float(frame.utility_per_slot10.mean()),
-                "mean_returned": float(frame.returned.mean()),
-                "mean_final_slots": float(frame.final_slots.mean()),
-            }
-        )
-        return result, frame
+        catalog = pd.Index(items)
+        pairs = val.groupby(["user_id", "video_id"], as_index=False)[label].max()
+        for user, frame in pairs.groupby("user_id", sort=True):
+            request = Request(f"{int(user)}:{start}:{end}", int(user))
+            warm = catalog.get_indexer(frame.video_id) >= 0
+            scope = CandidateScope(frame.loc[warm, "video_id"].to_numpy(dtype=np.int64))
+            relevant = frame.loc[warm & frame[label].eq(1), "video_id"].to_numpy(dtype=np.int64)
+            self.queries.append((request, scope))
+            self.positive[request.query_id] = relevant
+            self.all_positive[request.query_id] = int(frame[label].sum())
+            for key, count in [
+                ("all_pairs", len(frame)),
+                ("warm_pairs", len(scope.items)),
+                ("all_positive_pairs", int(frame[label].sum())),
+                ("warm_positive_pairs", len(relevant)),
+            ]:
+                self.coverage[key] += count
 
-    def duration_report(
-        self, predictions: np.ndarray, candidates: list[np.ndarray]
-    ) -> pd.DataFrame:
-        """Global top-K exposure and captured utility, grouped by observed duration.
-
-        Group ideals come from the full pool; group ceilings need not be attainable
-        simultaneously under one K budget. Duration is diagnostic only.
-        """
-        return self.duration_ordered([self.order(predictions, c)[: self.k] for c in candidates])
-
-    def duration_ordered(self, finals: list[np.ndarray]) -> pd.DataFrame:
-        """Duration diagnostics for executed final lists, at their actual positions."""
-        if len(finals) != len(self.users):
-            raise ValueError("Final query count differs from pool")
-        seconds = self.duration_ms / 1000
-        masks = {
-            "le10s": seconds <= 10,
-            "10_30s": (seconds > 10) & (seconds <= 30),
-            "30_60s": (seconds > 30) & (seconds <= 60),
-            "gt60s": seconds > 60,
-        }
-        rows = []
-        for u, user in enumerate(self.users):
-            lo, hi = self.offsets[u : u + 2]
-            final = finals[u]
-            for name, mask in masks.items():
-                ideal = self.dcg(np.sort(self.gains[lo:hi] * mask[lo:hi])[::-1])
-                actual = self.dcg(self.gains[final] * mask[final])
-                rows.append(
-                    {
-                        "user_id": int(user),
-                        "duration": name,
-                        "selected_slots": int(mask[final].sum()),
-                        "utility_per_slot10": float(
-                            (self.gains[final] * mask[final]).sum() / self.k
-                        ),
-                        "duration_ndcg10": actual / ideal if ideal else np.nan,
-                    }
+    def cache(self, retriever: Retriever, path: Path) -> ReplayRetriever:
+        """Freeze full supported channel rankings once, before any ranker comparison."""
+        frames = []
+        for request, scope in self.queries:
+            retrieved = retriever.retrieve(request, scope, max(1, len(scope.items)))
+            candidates = retrieved.candidates
+            if (
+                type(retrieved.supported_count) is not int
+                or retrieved.supported_count != len(candidates.items)
+                or not np.isin(candidates.items, scope.items).all()
+            ):
+                raise ValueError("Retriever must return its complete supported benchmark scope")
+            scores = np.full(len(scope.items), -np.inf)
+            scores[pd.Index(scope.items).get_indexer(candidates.items)] = candidates.scores
+            frames.append(
+                pd.DataFrame(
+                    {"query_id": request.query_id, "video_id": scope.items, "score": scores}
                 )
-        return pd.DataFrame(rows)
+            )
+        frame = pd.concat(frames, ignore_index=True)
+        frame.to_parquet(path, index=False)
+        return ReplayRetriever(
+            retriever.name, ScoreTable(frame, retriever.artifact_id, allow_unsupported=True)
+        )
+
+    def evaluate(self, results: list[Recommendation]) -> tuple[dict[str, Any], pd.DataFrame]:
+        if len(results) != len(self.queries):
+            raise ValueError("Query count mismatch")
+        rows = []
+        for (request, scope), result in zip(self.queries, results, strict=True):
+            if result.request != request or result.pool_size != len(scope.items):
+                raise ValueError("Query identity/scope mismatch")
+            if not np.isin(result.retrieved.items, scope.items).all():
+                raise ValueError("Out-of-pool candidates")
+            rest = result.retrieved.items[~np.isin(result.retrieved.items, result.items)]
+            ordered = np.r_[result.items, rest]
+            relevant = self.positive[request.query_id]
+            metrics = candidate_metrics(ordered, relevant)
+            all_positive = self.all_positive[request.query_id]
+            hits = int(np.isin(result.retrieved.items, relevant).sum())
+            rows.append(
+                {
+                    "user_id": request.user_id,
+                    **metrics,
+                    "all_target_recall": hits / all_positive if all_positive else None,
+                    "all_positive_items": all_positive,
+                    "warm_positive_items": len(relevant),
+                    "pool_items": len(scope.items),
+                    "returned": len(ordered),
+                    "pool_shortfall": result.pool_shortfall,
+                    "method_shortfall": result.method_shortfall,
+                }
+            )
+        per_user = pd.DataFrame(rows)
+        summary = {
+            name: float(per_user[name].mean()) if per_user[name].notna().any() else None
+            for name in ["recall", "ndcg", "oracle_ndcg", "all_target_recall", "returned"]
+        }
+        summary.update(
+            queries=len(rows),
+            positive_warm_queries=int(per_user.recall.notna().sum()),
+            positive_all_queries=int(per_user.all_target_recall.notna().sum()),
+            pool_shortfall_queries=int(per_user.pool_shortfall.gt(0).sum()),
+            method_shortfall_queries=int(per_user.method_shortfall.gt(0).sum()),
+        )
+        return summary, per_user
 
 
-@dataclass(frozen=True)
-class FunnelReport:
-    """Metrics and diagnostics for executed responses; labels never enter the pipeline."""
+def open_benchmark(data_path: Path, target: str = "long_view") -> WindowBenchmark:
+    data = PreparedDataset(data_path)
+    if target not in data.manifest["targets"]:
+        raise ValueError("Benchmark target must be a prepared target")
+    state = data.load_feature_state()
+    warm_items = state.items[state.columns["item_code"][1:] > 0]
+    return WindowBenchmark(
+        data.read_split("validation", ["user_id", "video_id", target]),
+        warm_items,
+        target,
+        data.manifest["train_end"],
+        data.manifest["val_end"],
+    )
 
-    metrics: dict[str, float | int | None]
-    per_user: pd.DataFrame
-    duration: pd.DataFrame
 
-
-class FunnelEvaluator:
-    """Align response IDs to the full observed pool, then measure the actual ordering."""
-
-    def __init__(self, pool: GainPool) -> None:
-        self.pool = pool
-
-    def evaluate(self, results: list[Recommendation]) -> FunnelReport:
-        pool = self.pool
-        if len(results) != len(pool.users):
-            raise ValueError("Missing/extra recommendation queries")
-        candidates, finals = [], []
-        for u, (user, result) in enumerate(zip(pool.users, results, strict=True)):
-            if result.request != Request(str(int(user)), int(user)):
-                raise ValueError("Recommendation query order/identity differs")
-            lo, hi = pool.offsets[u : u + 2]
-            if result.pool_size != hi - lo:
-                raise ValueError("Recommendation scope size differs from observed pool")
-            if not np.array_equal(result.retrieved.items, result.ranked.items):
-                raise ValueError("Ranked item identities differ from retrieved items")
-            positions = pd.Index(pool.items[lo:hi]).get_indexer(result.retrieved.items)
-            if (positions < 0).any():
-                raise ValueError("Recommendation outside observed evaluation scope")
-            final = result.final_positions
-            if (
-                final.ndim != 1
-                or final.dtype.kind not in "iu"
-                or (final < 0).any()
-                or (final >= len(positions)).any()
-            ):
-                raise ValueError("Invalid final positions")
-            candidates.append(lo + positions)
-            finals.append(lo + positions[final])
-        metrics, frame = pool.evaluate_ordered(candidates, finals)
-        frame["pool_shortfall"] = [r.pool_shortfall for r in results]
-        frame["method_shortfall"] = [r.method_shortfall for r in results]
-        return FunnelReport(metrics, frame, pool.duration_ordered(finals))
+def evaluate_pipeline(
+    benchmark: WindowBenchmark,
+    ranker: Ranker,
+    retriever: Retriever,
+    directory: Path,
+    *,
+    budget: int = 50,
+) -> dict[str, Any]:
+    """Current metric protocol is top10, full warm-observed-pool IDCG."""
+    directory.mkdir(parents=True, exist_ok=False)
+    pipeline = RecommendationPipeline(retriever, ranker, budget, 10)
+    results = [pipeline.recommend(request, scope) for request, scope in benchmark.queries]
+    metrics, per_user = benchmark.evaluate(results)
+    report = {
+        "metrics": metrics,
+        "coverage": benchmark.coverage,
+        "budget": budget,
+        "k": 10,
+        "retrieval_artifact": retriever.artifact_id,
+        "ranking_artifact": ranker.artifact_id,
+        "scope": "reused validation; warm observed-window candidates; no final-window scoring",
+    }
+    write_json(directory / "metrics.json", report)
+    per_user.to_parquet(directory / "per_user.parquet", index=False)
+    RecommendationTrace.from_results(results).write(directory / "recommendation")
+    return report

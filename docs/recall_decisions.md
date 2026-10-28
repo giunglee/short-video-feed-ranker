@@ -1,5 +1,8 @@
 # Recall: decisions and review guide
 
+> Historical evidence and commands refer to the [pre-refactor source](https://github.com/giunglee/short-video-feed-ranker/tree/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5).
+> For the active implementation, use the [KuaiRand workflow](kuairand_workflow.md).
+
 **Task:** find useful unseen user–video pairs for existing users in KuaiRec.
 This benchmark measures preference generalization within observed held-out pools,
 not next-watch prediction or catalog-wide online performance.

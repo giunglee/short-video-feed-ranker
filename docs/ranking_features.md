@@ -1,5 +1,8 @@
 # Which features help a fixed Deep ranker?
 
+> Historical evidence and commands refer to the [pre-refactor source](https://github.com/giunglee/short-video-feed-ranker/tree/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5).
+> For the active implementation, use the [KuaiRand workflow](kuairand_workflow.md).
+
 **Finding:** removing the discrete duration band, while retaining continuous log
 video duration, improved both within-user ordering and the final feed in this
 bounded study. Adding features did not necessarily help.
@@ -86,8 +89,8 @@ bounded study. Adding features did not necessarily help.
 
 ## Implementation and reproduction
 
-- [Feature preparation](../src/feed_ranker/data/feature_ablation.py) preserves the
-  existing split; [study runner](../src/feed_ranker/experiments/deep_features.py)
+- [Feature preparation](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/data/feature_ablation.py) preserves the
+  existing split; [study runner](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/experiments/deep_features.py)
   owns the declared arms, bounded confirmation and reports.
 - Pooled category IDs use `[batch, length]`, OOV 0 and masked padding −1. The shared
   encoder sums embeddings; inference exports the fitted per-item lookup. This

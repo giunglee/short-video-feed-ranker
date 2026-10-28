@@ -1,5 +1,8 @@
 # Combining retrieval channels without changing the ranking pipeline
 
+> Historical evidence and commands refer to the [pre-refactor source](https://github.com/giunglee/short-video-feed-ranker/tree/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5).
+> For the active implementation, use the [KuaiRand workflow](kuairand_workflow.md).
+
 **MF remains the single-retriever reference.** Multi-channel retrieval is now an
 optional component: it combines ranked lists into one deduplicated budget before
 the existing ranker runs. The experiment explains why this capability is useful
@@ -18,10 +21,10 @@ flowchart LR
     R --> E[Trace + offline evaluation]
 ```
 
-- **Composition:** [`ChannelRetriever.retrieve`](../src/feed_ranker/inference/channels.py)
-- **Allocation:** [`anchored_candidates`](../src/feed_ranker/recommendation/merging.py)
-- **Execution:** [`RecommendationPipeline.recommend`](../src/feed_ranker/recommendation/pipeline.py)
-- **Diagnosis:** [`ChannelDiagnostics.compare`](../src/feed_ranker/evaluation/channels.py)
+- **Composition:** [`ChannelRetriever.retrieve`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/inference/channels.py)
+- **Allocation:** [`anchored_candidates`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/recommendation/merging.py)
+- **Execution:** [`RecommendationPipeline.recommend`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/recommendation/pipeline.py)
+- **Diagnosis:** [`ChannelDiagnostics.compare`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/evaluation/channels.py)
 
 ## Policies and boundaries
 
@@ -110,7 +113,7 @@ response = pipeline.recommend(request, eligible_scope)
 # Retained default: RecommendationPipeline(mf, ranker, budget=50, k=10).
 ```
 
-The [existing evaluator](../src/feed_ranker/experiments/evaluate_funnel.py) accepts
+The [existing evaluator](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/experiments/evaluate_funnel.py) accepts
 multiple artifacts and an optional merge policy. Without it, methods run separately:
 
 ```sh

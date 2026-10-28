@@ -1,5 +1,8 @@
 # Two-stage recommendation: retrieve candidates, then rank the feed
 
+> Historical evidence and commands refer to the [pre-refactor source](https://github.com/giunglee/short-video-feed-ranker/tree/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5).
+> For the active implementation, use the [KuaiRand workflow](kuairand_workflow.md).
+
 **Retained pipeline:** popularity, cosine item cooccurrence or BPR MF → frozen
 capped Deep `[64, 32]` → top-10 feed. MF produces the strongest final feed among
 these retrieval methods across five matched seeds. **The Deep upgrade itself is
@@ -61,13 +64,13 @@ recommended_ids = response.items
 
 Implementation responsibilities:
 
-- **Features:** [`features/config.py`](../src/feed_ranker/features/config.py) declares inputs; [`features/kuairec.py`](../src/feed_ranker/features/kuairec.py) fits training lookups and builds candidate features from saved state.
-- **Models:** [`models/`](../src/feed_ranker/models) contains shared mathematical implementations; `ranking_factory.py` constructs them from an explicit `ModelSpec`.
-- **Training:** [`training/`](../src/feed_ranker/training) owns optimization, sampling, baseline fitting and artifact export. It invokes evaluation without owning its implementation.
-- **Inference:** [`inference/`](../src/feed_ranker/inference) loads artifacts and adapts fitted models to `retrieve` / `score`. Loading requires no experiment dataset or recipe.
-- **Recommendation:** [`recommendation/`](../src/feed_ranker/recommendation) owns request/result contracts, pipeline ordering and label-free traces. The pipeline is unchanged when a fitted model is replaced.
-- **Evaluation:** [`evaluation/kuairec.py`](../src/feed_ranker/evaluation/kuairec.py) builds observed scopes and verifies splits; [`evaluation/funnel.py`](../src/feed_ranker/evaluation/funnel.py) aligns response IDs to labels and returns `FunnelReport(metrics, per_user, duration)`.
-- **Experiments:** [`evaluate_funnel.py`](../src/feed_ranker/experiments/evaluate_funnel.py) assembles the benchmark from ready artifacts. [`convert_inference.py`](../src/feed_ranker/experiments/convert_inference.py) separately migrates old runs and checks the frozen Deep reference.
+- **Features:** [`features/config.py`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/features/config.py) declares inputs; [`features/kuairec.py`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/features/kuairec.py) fits training lookups and builds candidate features from saved state.
+- **Models:** [`models/`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/models) contains shared mathematical implementations; `ranking_factory.py` constructs them from an explicit `ModelSpec`.
+- **Training:** [`training/`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/training) owns optimization, sampling, baseline fitting and artifact export. It invokes evaluation without owning its implementation.
+- **Inference:** [`inference/`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/inference) loads artifacts and adapts fitted models to `retrieve` / `score`. Loading requires no experiment dataset or recipe.
+- **Recommendation:** [`recommendation/`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/recommendation) owns request/result contracts, pipeline ordering and label-free traces. The pipeline is unchanged when a fitted model is replaced.
+- **Evaluation:** [`evaluation/kuairec.py`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/evaluation/kuairec.py) builds observed scopes and verifies splits; [`evaluation/funnel.py`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/evaluation/funnel.py) aligns response IDs to labels and returns `FunnelReport(metrics, per_user, duration)`.
+- **Experiments:** [`evaluate_funnel.py`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/experiments/evaluate_funnel.py) assembles the benchmark from ready artifacts. [`convert_inference.py`](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/experiments/convert_inference.py) separately migrates old runs and checks the frozen Deep reference.
 
 The experiment no longer maps candidate IDs to label-array positions or constructs trace rows:
 
