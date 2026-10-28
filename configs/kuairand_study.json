@@ -1,0 +1,155 @@
+{
+  "data": "runs/kuairand_prepared",
+  "tasks": [
+    {
+      "output": "long_view",
+      "target": "long_view"
+    }
+  ],
+  "training": {
+    "epochs": 5,
+    "selection_metric": "long_view/logloss",
+    "selection_mode": "min",
+    "optimizer": {
+      "lr": 0.001,
+      "weight_decay": 0.0
+    }
+  },
+  "loading": {
+    "batch_size": 4096,
+    "eval_batch_size": 8192
+  },
+  "seeds": [
+    42
+  ],
+  "primary_seeds": [
+    42
+  ],
+  "mf_epochs": 5,
+  "budget": 50,
+  "recipes": [
+    {
+      "name": "reference",
+      "model": {
+        "features": [
+          "train_duration_log1p",
+          "train_duration_missing",
+          "user_code",
+          "item_code"
+        ],
+        "hidden": [
+          64,
+          32
+        ],
+        "embedding_dim": 8,
+        "dropout": 0.0,
+        "output": "long_view"
+      }
+    },
+    {
+      "name": "narrow",
+      "model": {
+        "features": [
+          "train_duration_log1p",
+          "train_duration_missing",
+          "user_code",
+          "item_code"
+        ],
+        "hidden": [
+          32,
+          16
+        ],
+        "embedding_dim": 8,
+        "dropout": 0.0,
+        "output": "long_view"
+      }
+    },
+    {
+      "name": "wide",
+      "model": {
+        "features": [
+          "train_duration_log1p",
+          "train_duration_missing",
+          "user_code",
+          "item_code"
+        ],
+        "hidden": [
+          128,
+          64
+        ],
+        "embedding_dim": 8,
+        "dropout": 0.0,
+        "output": "long_view"
+      }
+    },
+    {
+      "name": "no_user",
+      "model": {
+        "features": [
+          "train_duration_log1p",
+          "train_duration_missing",
+          "item_code"
+        ],
+        "hidden": [
+          64,
+          32
+        ],
+        "embedding_dim": 8,
+        "dropout": 0.0,
+        "output": "long_view"
+      }
+    },
+    {
+      "name": "no_item",
+      "model": {
+        "features": [
+          "train_duration_log1p",
+          "train_duration_missing",
+          "user_code"
+        ],
+        "hidden": [
+          64,
+          32
+        ],
+        "embedding_dim": 8,
+        "dropout": 0.0,
+        "output": "long_view"
+      }
+    },
+    {
+      "name": "no_duration",
+      "model": {
+        "features": [
+          "user_code",
+          "item_code"
+        ],
+        "hidden": [
+          64,
+          32
+        ],
+        "embedding_dim": 8,
+        "dropout": 0.0,
+        "output": "long_view"
+      }
+    },
+    {
+      "name": "duration_band",
+      "model": {
+        "features": [
+          "train_duration_log1p",
+          "train_duration_missing",
+          "train_duration_band",
+          "user_code",
+          "item_code"
+        ],
+        "hidden": [
+          64,
+          32
+        ],
+        "embedding_dim": 8,
+        "dropout": 0.0,
+        "output": "long_view"
+      }
+    }
+  ]
+}
