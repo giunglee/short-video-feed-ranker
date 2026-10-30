@@ -4,21 +4,13 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import torch
 
-from feed_ranker.evaluation.funnel import FunnelEvaluator, GainPool
-from feed_ranker.evaluation.retrieval import score_pool
-from feed_ranker.inference.replay import ReplayRanker, ReplayRetriever, ScoreTable
-from feed_ranker.inference.retrievers import (
-    CooccurrenceRetriever,
-    MFRetriever,
-    PopularityRetriever,
-)
-from feed_ranker.models.recall import BPRMF, CosineCooccurrence
+from feed_ranker.evaluation.funnel import WindowBenchmark
+from feed_ranker.models.recall import BPRMF, SparseCosineCooccurrence
 from feed_ranker.recommendation.contracts import (
     CandidateScope,
     Request,
@@ -26,8 +18,13 @@ from feed_ranker.recommendation.contracts import (
     ScoredItems,
 )
 from feed_ranker.recommendation.pipeline import RecommendationPipeline
+from feed_ranker.recommendation.replay import ReplayRanker, ReplayRetriever, ScoreTable
+from feed_ranker.recommendation.retrievers import (
+    MFRetriever,
+    PopularityRetriever,
+    SparseCooccurrenceRetriever,
+)
 from feed_ranker.recommendation.traces import RecommendationTrace
-from feed_ranker.training.recall import fit_baseline
 
 
 class RecordingRanker:
@@ -149,21 +146,10 @@ class RecommendationTests(unittest.TestCase):
         users, items = np.array([7, 8, 9]), np.array([10, 20, 30, 40])
         h = torch.tensor([[1.0, 1.0, 0.0, 0.0], [0.0, 1.0, 1.0, 0.0], [1.0, 0.0, 1.0, 0.0]])
         positives = [np.flatnonzero(row.numpy()) for row in h]
-        data = SimpleNamespace(
-            users=users,
-            items=items,
-            positive=positives,
-            pools=SimpleNamespace(
-                items=np.tile(np.arange(4), 3),
-                users=np.repeat(np.arange(3), 4),
-                offsets=np.arange(0, 13, 4),
-            ),
+        cooc = SparseCooccurrenceRetriever(
+            users, items, SparseCosineCooccurrence(positives, 4), "fit"
         )
-        cooc = CooccurrenceRetriever(users, items, CosineCooccurrence(h), "fit")
-        data.training = SimpleNamespace(**vars(data))
-        expected = fit_baseline(data.training, "cooccurrence", "fixture").model.score_users(
-            0, len(data.users)
-        )[data.pools.users, data.pools.items]
+        expected = np.array([0.5, 0.5, 1.0, 0.0])
         expected[expected <= 0] = -np.inf
         got = cooc.retrieve(self.request, self.scope, 10).candidates
         index = pd.Index(items).get_indexer(got.items)
@@ -179,69 +165,6 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(set(result.candidates.items), {10, 20, 40})
         self.assertEqual(mf.retrieve(Request("unsupported", 8), self.scope, 10).supported_count, 0)
         self.assertEqual(mf.retrieve(Request("cold", 99), self.scope, 10).supported_count, 0)
-
-    def test_evaluator_consumes_final_order_and_full_pool_labels(self) -> None:
-        pool = GainPool(
-            np.array([7]),
-            np.array([10, 20, 30]),
-            np.array([0, 3]),
-            np.array([2.0, 1.0, 0.0]),
-            np.ones(3),
-            k=2,
-        )
-        # Candidate order and final order need not match; evaluator must not reorder.
-        metrics, _ = pool.evaluate_ordered([np.array([1, 0])], [np.array([1, 0])])
-        expected = (1 + 2 / np.log2(3)) / (2 + 1 / np.log2(3))
-        self.assertAlmostEqual(metrics["cap2_ndcg10"], expected)
-        short, _ = pool.evaluate_ordered([np.array([1])], [np.array([1])])
-        self.assertLess(short["candidate_oracle_ndcg10"], 1)
-        # Labels affect evaluation only; runtime request has no label field.
-        pipeline = RecommendationPipeline(self.pop, RecordingRanker(), 2, 1)
-        before = pipeline.recommend(self.request, self.scope)
-        pool.ratios[:] = 100
-        after = pipeline.recommend(self.request, self.scope)
-        np.testing.assert_array_equal(before.items, after.items)
-
-    def test_response_evaluation_aligns_ids_and_retains_full_pool_ideal(self) -> None:
-        items = np.array([10, 20, 30])
-        pool = GainPool(
-            np.array([7]), items, np.array([0, 3]), np.array([2.0, 1.0, 0.0]), np.ones(3), k=2
-        )
-        retriever = PopularityRetriever(items, np.array([0.0, 1.0, 0.0]), "partial")
-        result = RecommendationPipeline(retriever, RecordingRanker(), 3, 2).recommend(
-            Request("7", 7), CandidateScope(items)
-        )
-        report = FunnelEvaluator(pool).evaluate([result])
-        self.assertAlmostEqual(report.metrics["cap2_ndcg10"], 1 / (2 + 1 / np.log2(3)))
-        self.assertEqual(report.per_user.method_shortfall.iloc[0], 2)
-        self.assertEqual(report.duration.selected_slots.sum(), 1)
-        with self.assertRaisesRegex(ValueError, "Missing/extra"):
-            FunnelEvaluator(pool).evaluate([])
-        for malformed in (
-            replace(result, request=Request("wrong-query", 7)),
-            replace(result, pool_size=2),
-            replace(result, ranked=ScoredItems(np.array([30]), np.ones(1))),
-            replace(result, final_positions=np.array([-1])),
-        ):
-            with self.subTest(result=malformed), self.assertRaises(ValueError):
-                FunnelEvaluator(pool).evaluate([malformed])
-
-    def test_response_evaluation_rejects_out_of_pool_ids_and_does_not_reorder(self) -> None:
-        items = np.array([20, 10, 30])  # Pool order is intentionally not raw-ID order.
-        pool = GainPool(
-            np.array([7]), items, np.array([0, 3]), np.array([1.0, 2.0, 0.0]), np.ones(3), k=2
-        )
-        retriever = PopularityRetriever(items, np.array([3.0, 2.0, 1.0]), "counts")
-        result = RecommendationPipeline(retriever, RecordingRanker(), 2, 2).recommend(
-            Request("7", 7), CandidateScope(items)
-        )
-        evaluator = FunnelEvaluator(pool)
-        self.assertEqual(evaluator.evaluate([result]).metrics["cap2_ndcg10"], 1.0)
-        reversed_result = replace(result, final_positions=result.final_positions[::-1])
-        self.assertLess(evaluator.evaluate([reversed_result]).metrics["cap2_ndcg10"], 1.0)
-        invalid = ScoredItems(np.array([999, 10]), np.ones(2))
-        with self.assertRaisesRegex(ValueError, "outside observed"):
-            evaluator.evaluate([replace(result, retrieved=invalid, ranked=invalid)])
 
     def test_trace_preserves_empty_queries_artifacts_and_selected_order(self) -> None:
         pipe = RecommendationPipeline(self.pop, RecordingRanker(), 3, 2)
@@ -269,8 +192,40 @@ class RecommendationTests(unittest.TestCase):
         values = np.array([1.0, 1.0 + 1e-10, -np.inf])
         frame = pd.DataFrame({"query_id": ["q"] * 3, "video_id": items, "score": values})
         retriever = ReplayRetriever("fixture", ScoreTable(frame, "saved", allow_unsupported=True))
-        got = score_pool(retriever, [(Request("q", 7), CandidateScope(items))])
+        candidates = retriever.retrieve(Request("q", 7), CandidateScope(items), 3).candidates
+        got = (
+            pd.Series(candidates.scores, index=candidates.items)
+            .reindex(items, fill_value=-np.inf)
+            .to_numpy()
+        )
         np.testing.assert_array_equal(got, values)
+
+    def test_full_scope_cache_rejects_incomplete_or_invalid_support(self) -> None:
+        benchmark = WindowBenchmark(
+            pd.DataFrame({"user_id": [7, 7, 7], "video_id": [10, 20, 30], "long_view": [1, 0, 1]}),
+            np.array([10, 20, 30]),
+            "long_view",
+            0,
+            1,
+        )
+        retriever = PopularityRetriever(np.array([10, 20, 30]), np.array([3, 2, 0]), "fixture")
+        good = retriever.retrieve
+        request, scope = benchmark.queries[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for support in (0, 3, -1, 2.0, True):
+                retriever.retrieve = lambda *args: replace(good(*args), supported_count=support)
+                path = root / "bad.parquet"
+                with self.subTest(support=support):
+                    with self.assertRaisesRegex(ValueError, "complete supported"):
+                        benchmark.cache(retriever, path)
+                    self.assertFalse(path.exists())
+            retriever.retrieve = good
+            cached = benchmark.cache(retriever, root / "good.parquet")
+            actual, expected = cached.retrieve(request, scope, 3), good(request, scope, 3)
+            np.testing.assert_array_equal(actual.candidates.items, expected.candidates.items)
+            np.testing.assert_array_equal(actual.candidates.scores, expected.candidates.scores)
+            self.assertEqual(actual.supported_count, 2)
 
 
 if __name__ == "__main__":

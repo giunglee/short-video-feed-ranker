@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "refactor/**", "experiment/kuairand-baselines"]
   push:
-    branches: [main]
+    branches: [main, "refactor/**", "experiment/kuairand-baselines"]
   workflow_dispatch:
 
 permissions:
@@ -45,9 +45,9 @@ jobs:
           python -m pip install -e '.[dev]'
           python -m pip check
       - name: Lint
-        run: python -m ruff check src tests scripts
+        run: python -m ruff check src tests scripts experiments
       - name: Check formatting
-        run: python -m ruff format --check src tests scripts
+        run: python -m ruff format --check src tests scripts experiments
       - name: Run public-fixture tests
         env:
           MPLCONFIGDIR: ${{ runner.temp }}/matplotlib

@@ -59,3 +59,22 @@ def _parameter_groups(model: nn.Module, weight_decay: float) -> list[dict[str, A
     if not groups:
         raise ValueError("No trainable parameters")
     return groups
+
+
+def optimizer_contract(model: nn.Module, optimizer: torch.optim.Optimizer) -> dict[str, Any]:
+    """Record the supplied optimizer's type, settings and ordered parameter names."""
+    names = {id(parameter): name for name, parameter in model.named_parameters()}
+    groups = []
+    for group in optimizer.param_groups:
+        if any(id(parameter) not in names for parameter in group["params"]):
+            raise ValueError("Optimizer parameters must belong to the supplied model")
+        groups.append(
+            {
+                **{key: value for key, value in group.items() if key != "params"},
+                "params": [names[id(parameter)] for parameter in group["params"]],
+            }
+        )
+    return {
+        "class": f"{type(optimizer).__module__}.{type(optimizer).__qualname__}",
+        "groups": groups,
+    }

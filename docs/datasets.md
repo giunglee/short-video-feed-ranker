@@ -1,5 +1,8 @@
 # Data protocol and training decisions
 
+> Historical evidence and commands refer to the [pre-refactor source](https://github.com/giunglee/short-video-feed-ranker/tree/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5).
+> For the active implementation, use the [KuaiRand workflow](kuairand_workflow.md).
+
 **Current ranking study:** capped-label MAE (`min(watch_ratio, 2)`), maximum
 validation user-XAUC checkpoint selection, and a 120-epoch cap. See the
 [architecture results and reproduction](ranking_architecture.md).

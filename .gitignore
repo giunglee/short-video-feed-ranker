@@ -18,6 +18,7 @@ checkpoints/
 runs/
 *.pt
 *.pth
+!tests/fixtures/recall_reference.pt
 
 # Local notes and editor settings
 AGENTS.md

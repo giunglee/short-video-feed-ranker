@@ -1,5 +1,8 @@
 # Capped-label ranking: Linear, Wide, Deep, and Wide & Deep
 
+> Historical evidence and commands refer to the [pre-refactor source](https://github.com/giunglee/short-video-feed-ranker/tree/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5).
+> For the active implementation, use the [KuaiRand workflow](kuairand_workflow.md).
+
 **Finding:** Deep `[64, 32]` performed best among the tested recipes on both
 validation and test. Adding an explicit wide branch did not improve the selected
 Deep recipe. This is an offline comparison under a bounded search, not a universal
@@ -118,8 +121,8 @@ python -m feed_ranker.experiments.ranking_study \
 - Outputs include the protocol, recipes, checkpoint hashes, full histories,
   per-seed and paired summaries, seeds 43–46 sensitivity, cohort traces, and curves.
   Raw data, checkpoints, and generated run artifacts are not committed.
-- Start with [feature/model construction](../src/feed_ranker/experiments/ranking_architecture.py)
-  and [study orchestration](../src/feed_ranker/experiments/ranking_study.py).
+- Start with [feature/model construction](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/experiments/ranking_architecture.py)
+  and [study orchestration](https://github.com/giunglee/short-video-feed-ranker/blob/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5/src/feed_ranker/experiments/ranking_study.py).
   Public synthetic fixtures exercise all four models and the freeze-before-test flow.
 
 Reference: [Wide & Deep, Cheng et al. (2016)](https://arxiv.org/abs/1606.07792).

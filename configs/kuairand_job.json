@@ -1,0 +1,41 @@
+{
+  "data": "runs/prepared",
+  "model": {
+    "features": [
+      "train_duration_log1p",
+      "train_duration_missing",
+      "user_code",
+      "item_code",
+      "train_duration_band"
+    ],
+    "hidden": [
+      64,
+      32
+    ],
+    "embedding_dim": 8,
+    "dropout": 0.0,
+    "output": "long_view"
+  },
+  "tasks": [
+    {
+      "output": "long_view",
+      "target": "long_view",
+      "loss": "bce_logits",
+      "task_weight": 1.0
+    }
+  ],
+  "training": {
+    "epochs": 1,
+    "seed": 42,
+    "selection_metric": "long_view/roc_auc",
+    "selection_mode": "max",
+    "optimizer": {
+      "lr": 0.001,
+      "weight_decay": 0.0
+    }
+  },
+  "loading": {
+    "batch_size": 4096,
+    "eval_batch_size": 8192
+  }
+}

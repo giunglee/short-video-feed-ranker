@@ -15,6 +15,9 @@ dependencies = [
   "matplotlib>=3.8,<4",
 ]
 
+[project.scripts]
+feed-ranker = "feed_ranker.cli:main"
+
 [project.optional-dependencies]
 dev = ["ruff>=0.11,<1"]
 eda = ["nbformat>=5,<6", "nbclient>=0.10,<1", "nbconvert>=7,<8", "ipykernel>=6,<8"]

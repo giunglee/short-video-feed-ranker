@@ -1,5 +1,0 @@
-{
-  "categorical": ["user_id", "video_id"],
-  "dense": ["video_duration"],
-  "crosses": {}
-}

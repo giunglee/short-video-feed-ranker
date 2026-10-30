@@ -1,5 +1,8 @@
 # Progress
 
+> Historical evidence and commands refer to the [pre-refactor source](https://github.com/giunglee/short-video-feed-ranker/tree/033fdc90d89a1c8b9dc5a6dbb6940290762af3a5).
+> For the active implementation, use the [KuaiRand workflow](kuairand_workflow.md).
+
 1. **EDA and data protocol:** label/feature audit, signature deduplication,
    fixed big-only pair split, and train-fitted preprocessing.
    [Findings](../data/kuairec_eda_findings.md).
