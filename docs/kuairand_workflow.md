@@ -38,11 +38,11 @@ state and its public methods before following the private implementation.
   `forward(outputs, batch)` applies output/target mappings, masks, example weights
   and task weights; returns scalar loss plus reduction diagnostics. It lives in
   `training/objectives.py` and is supplied to the trainer independently of the model.
-- **`Trainer`** — state: model, TrainConfig, loss callable, optimizer.
-  Main method: `fit(train_batches, validate, directory, metadata, ...)`, with
-  optional metric recording, frozen-model training evaluation and resume input.
-  Epoch history and selection are local to a fit; private methods handle updates,
-  checkpoint writing and restoration.
+- **`Trainer`** — state: supplied model, optimizer, Objective and TrainConfig.
+  `fit(train_loader, validation_loader, evaluator, checkpoint_dir=..., run_identity=...)`
+  owns updates, validation, history and checkpoint selection. It leaves the model
+  at the final epoch; the job explicitly loads selected weights before export.
+  `training/checkpoint.py` owns plain checkpoint save/load and CPU continuation.
 - **`ObservedSampler`** — state: supported-user mask and flattened positive/negative
   histories; `sample(rng)` returns aligned user/positive/negative tensors.
   `training/bpr.py:fit_mf(model, sampler, optimizer, epochs=..., seed=...)` updates
@@ -55,7 +55,9 @@ state and its public methods before following the private implementation.
 - **Fitted artifact dataclasses** — `RankerArtifact` holds model plus FeatureState;
   `MFArtifact` holds model, vocabularies and supported users; `CosineArtifact` and
   `PopularityArtifact` hold fitted scores/state plus vocabularies. Each carries
-  identity and provenance. `save_artifact()`/`load_artifact()` own persistence.
+  identity and provenance. `load_artifact()` returns these records; direct
+  `save_ranker()`, `save_mf()`, `save_cosine()` and `save_popularity()` functions
+  accept fitted state without requiring an artifact object first.
 - **Recommendation adapters** — `ModelRanker` owns RankerArtifact and inference
   batching; `score(request, items)` returns ScoredItems. Each fitted retriever owns
   its scorer, ID lookup and support state; `retrieve(request, scope, limit)` returns
@@ -71,9 +73,10 @@ state and its public methods before following the private implementation.
   `evaluate_pipeline()`, the local composition and report writing.
 
 Configuration records are `DeepConfig` (dense/sparse inputs and Deep dimensions),
-`TaskLossConfig` (output/target/mask/weight mapping), `TrainConfig` (optimization and
-selection), `OptimizerConfig` (optimizer settings), and `TrainingJobConfig` (local
-assembly). They configure behavior; they do not execute it. `Batch` is a TypedDict,
+`TaskLossConfig` (output/target/mask/weight mapping), `TrainConfig` (epoch loop and
+selection), `OptimizerConfig` (job optimizer settings), and `TrainingJobConfig` (local
+assembly). Trainer records the actual supplied optimizer class, group settings
+and parameter order for continuation. They configure behavior; they do not execute it. `Batch` is a TypedDict,
 not a runtime class. `Retriever` and `Ranker` are structural Protocols, not base
 classes that models must inherit. Request/response dataclasses are `Request`,
 `CandidateScope`, `ScoredItems`, `RetrievalResult` and `Recommendation`.
@@ -99,9 +102,9 @@ These functions do not select model inputs, fit transforms or score a final mode
 preprocessing/ kuairand.py, features.py, kuairand_audit.py
 data/          parquet.py, dataset.py
 models/        ranking.py, recall.py, components/mlp.py
-training/      objectives.py, trainer.py, bpr.py, optimizer.py, jobs.py
+training/      objectives.py, trainer.py, checkpoint.py, bpr.py, optimizer.py, jobs.py
 artifacts.py   fitted scorer records and validated save/load
-persistence.py JSON/checkpoint writes, hashes and run/source provenance
+persistence.py JSON writes, hashes and run/source provenance
 evaluation/    metrics.py, predictions.py, funnel.py
 recommendation/ rankers.py, retrievers.py, merged.py, merging.py, pipeline.py
                 contracts.py, ordering.py, replay.py, traces.py
@@ -131,14 +134,14 @@ Jobs own construction and export; `optimizer.py` retains the shared decay policy
   a dataset schema. Sparse vocabulary sizes are resolved from ETL once; model
   configuration owns embedding widths and layers. The input mapping is immutable;
   `to_dict()` produces an independent serialization value.
-- **Trainer:** `training/trainer.py:Trainer` owns model/optimizer execution state.
-  `fit()` consumes an epoch-to-batches function, explicit validation callback,
-  checkpoint destination and resume identity. It has no raw-data, preparation,
-  feature-selection or fitted-model export logic. An optional `record_metrics`
-  callback receives epoch records for another persistence destination; local
-  history remains available for continuation. The same Trainer owns optimizer
-  updates, epoch history, checkpoint selection and CPU continuation; no second trainer or lifecycle-forwarding class is retained.
-  No database service is implemented.
+- **Trainer:** `training/trainer.py:Trainer` consumes concrete, re-iterable loaders
+  and a prediction evaluator. `EpochBatchSampler` supplies the existing NumPy
+  seed-plus-epoch ordering without consuming dropout RNG. The optional
+  `train_eval_loader` records frozen-model training metrics.
+  Trainer writes only epoch history and checkpoints. Jobs own configuration,
+  source provenance, final results and inference export. There are no loader,
+  validation or metric-storage callbacks. `checkpoint.py` validates both last
+  and best checkpoint contracts and history before restoring CPU continuation.
 - **Evaluator:** `evaluation/predictions.py:PredictionEvaluator` owns output/label
   interpretation. `collect(model, batches)` produces aligned `Predictions`;
   `evaluate_predictions(records)` calculates metrics without a model or loader.
@@ -147,8 +150,9 @@ Jobs own construction and export; `optimizer.py` retains the shared decay policy
   update loss and optional frozen-model training metrics are distinct records.
 - **Fitted packages:** `artifacts.py` has concrete `RankerArtifact`,
   `MFArtifact`, `CosineArtifact` and `PopularityArtifact` records. Required state
-  is visible in each constructor instead of optional fields with hidden valid
-  combinations. `RankerArtifact` alone validates model/ETL input agreement.
+  is visible in each loaded record. Direct writers validate their inputs and
+  atomically publish a complete directory without reconstructing a model.
+  Ranker loading and saving validate model/feature agreement.
   Fitted packages exclude optimizer/continuation state and executable objectives.
   Training jobs record objective configuration in run/checkpoint provenance.
   `persistence.py` contains generic storage helpers, not scorer reconstruction.
@@ -161,17 +165,20 @@ Jobs own construction and export; `optimizer.py` retains the shared decay policy
 The model can be trained from already-produced instances without calling the job:
 
 ```python
-model = DeepModel(model_config)
+model = DeepModel(model_config).to(train_config.device)
+optimizer = build_optimizer(model, optimizer_config)
 objective = Objective(task_configs)
 evaluator = PredictionEvaluator({"long_view": "long_view"})
-trainer = Trainer(model, train_config, loss=objective)
+trainer = Trainer(model, optimizer, objective, train_config)
 result = trainer.fit(
-    train_batches,  # epoch -> iterable of named tensor batches
-    lambda current: evaluator.evaluate(current, validation_loader),
-    run_directory,
-    {"resume_contract": input_and_model_identity},
-    record_metrics=store_epoch_record,
+    train_loader,
+    validation_loader,
+    evaluator,
+    checkpoint_dir=run_directory / "checkpoints",
+    run_identity=input_and_model_identity,
 )
+load_model_weights(model, Path(result["best_checkpoint"]))
+save_ranker(run_directory / "model", model, feature_state, provenance)
 ```
 
 `training/jobs.py` is the optional local composition, including path handling,
@@ -223,7 +230,7 @@ python -m feed_ranker.cli prepare --raw data/raw/kuairand --out runs/prepared --
 python -m feed_ranker.cli validate-data --data runs/prepared
 python -m feed_ranker.cli train --config configs/kuairand_job.json --out runs/deep
 python -m feed_ranker.cli fit-recall --data runs/prepared --out runs/recall --epochs 5 --seed 42
-python -m feed_ranker.cli evaluate --data runs/prepared --ranker runs/deep/model --recall runs/recall/popularity runs/recall/cosine runs/recall/mf --out runs/evaluation
+python -m feed_ranker.cli evaluate --data runs/prepared --ranker runs/deep/model --recall runs/recall/models/popularity runs/recall/models/cosine runs/recall/models/mf --out runs/evaluation
 ```
 
 These are executable examples, not a new experiment budget. The job template uses
@@ -239,6 +246,32 @@ larger epoch cap. Other training/objective/model/data changes fail. The selected
 model is exported separately from optimizer/RNG/continuation state. Original
 directories are never overwritten. CPU epoch-boundary continuation is tested;
 GPU-exact and MF continuation are not supported.
+
+New ranking runs have one predictable layout:
+
+```text
+run/
+  config.json                resolved inputs, objectives and training settings
+  provenance.json            source revision/diff and data identity
+  history.json               complete epoch curve and diagnostics
+  result.json                selected epoch, metrics and export path
+  checkpoints/
+    last.pt                  model, optimizer and CPU RNG for continuation
+    best.pt                  selected model weights and selection metadata
+  model/
+    manifest.json            format, output meaning, provenance and checksums
+    config.json              inference model configuration
+    weights.pt               plain model state_dict
+    features/
+      feature-state.npz
+      feature-tables.json
+```
+
+Recall runs use the same run-level files, `checkpoints/mf.pt`, and
+`models/{mf,cosine,popularity}/`; each model directory contains its own manifest,
+configuration and fitted state. MF selection remains fixed final epoch.
+New training checkpoints carry `training-checkpoint-v1`; pre-refactor checkpoints
+require their original training code. Existing inference exports remain readable.
 
 For label-free scoring, use `recommend` with the same `--ranker`, `--recall` and
 `--out` arguments plus `--requests requests.json`. Requests are a JSON list of
@@ -273,12 +306,13 @@ latency. Those measurements require separately scoped runs.
 
 Prepared data now uses `kuairand-prepared-v4`, containing complete example rows.
 Regenerate older event-only prepared data into a fresh directory. New exports use
-`fitted-scorer-v4`, with grouped user/item feature definitions. The loader also
-accepts fitted-scorer-v2/v3 without refitting or constructing training objectives.
+`fitted-scorer-v5`, with configuration and feature state in separate files. The loader also
+accepts fitted-scorer-v2/v3/v4 without refitting or constructing training objectives.
 Model configuration, weights, feature state and output meaning are still checked.
 Historical KuaiRand v1/v2 bundles are a different format and still require the
 pinned checkout. Dependent study callers must adopt the new reader/Dataset imports
-and materialized-data interface; no forwarding aliases are retained.
+and materialized-data interface, concrete Trainer arguments and direct export
+functions; no forwarding aliases are retained.
 
 Deep models concatenate sparse inputs in sorted-name order followed by configured
 dense order. That changed during the larger rearchitecture, so its retraining is

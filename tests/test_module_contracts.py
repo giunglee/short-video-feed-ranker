@@ -14,8 +14,8 @@ import numpy as np
 import torch
 from test_prepared_data import raw_fixture
 
-from feed_ranker.artifacts import RankerArtifact, save_artifact
-from feed_ranker.data.dataset import EventDataset, make_loader
+from feed_ranker.artifacts import save_ranker
+from feed_ranker.data.dataset import EpochBatchSampler, EventDataset, make_loader
 from feed_ranker.evaluation.predictions import (
     PredictionEvaluator,
     Predictions,
@@ -24,8 +24,10 @@ from feed_ranker.evaluation.predictions import (
 from feed_ranker.models.ranking import DeepConfig, DeepModel
 from feed_ranker.preprocessing.features import FeatureState
 from feed_ranker.preprocessing.kuairand import prepare_kuairand
+from feed_ranker.training.checkpoint import load_model_weights
 from feed_ranker.training.jobs import job_config
 from feed_ranker.training.objectives import Objective, TaskLossConfig
+from feed_ranker.training.optimizer import OptimizerConfig, build_optimizer
 from feed_ranker.training.trainer import TrainConfig, Trainer
 
 
@@ -44,17 +46,25 @@ class ModuleContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             trainer = Trainer(
                 model,
+                build_optimizer(model, OptimizerConfig()),
+                Objective((TaskLossConfig("long_view", "long_view"),)),
                 TrainConfig(epochs=2),
-                loss=Objective((TaskLossConfig("long_view", "long_view"),)),
             )
             result = trainer.fit(
-                lambda epoch: [batch],
-                lambda current: evaluator.evaluate(current, [batch]),
-                Path(tmp) / "training",
-                {"resume_contract": {"source": "in-memory-public-fixture"}},
-                train_evaluate=lambda current: evaluator.evaluate(current, [batch]),
-                record_metrics=lambda row: records.append(json.loads(json.dumps(row))),
+                [batch],
+                [batch],
+                evaluator,
+                checkpoint_dir=Path(tmp) / "training/checkpoints",
+                run_identity={"source": "in-memory-public-fixture"},
+                train_eval_loader=[batch],
             )
+            records = json.loads((Path(tmp) / "training/history.json").read_text())
+            last = torch.load(Path(tmp) / "training/checkpoints/last.pt", weights_only=True)
+            for name, value in model.state_dict().items():
+                torch.testing.assert_close(value, last["model"][name], rtol=0, atol=0)
+            self.assertFalse((Path(tmp) / "training/result.json").exists())
+            self.assertFalse((Path(tmp) / "training/config.json").exists())
+            load_model_weights(model, Path(result["best_checkpoint"]))
         self.assertEqual([r["epoch"] for r in records], [0, 1])
         self.assertTrue(any(not torch.equal(initial[n], v) for n, v in model.state_dict().items()))
         self.assertEqual(result["val"], evaluator.evaluate(model, [batch]))
@@ -62,6 +72,48 @@ class ModuleContractTests(unittest.TestCase):
             self.assertEqual(record["train_rows"], 4)
             self.assertEqual(record["train_eval"], record["val"])
             self.assertEqual(record["tasks"]["long_view"]["denominator"], 4)
+
+    def test_trainer_uses_supplied_optimizer(self) -> None:
+        model = DeepModel(DeepConfig(dense=("value",), hidden=(4,)))
+        initial = {n: v.clone() for n, v in model.state_dict().items()}
+        batch = {
+            "features": {"value": torch.tensor([-1.0, 1.0])},
+            "targets": {"long_view": torch.tensor([0.0, 1.0])},
+            "metadata": {"user_id": torch.tensor([1, 1])},
+        }
+        optimizer = torch.optim.SGD(model.parameters(), lr=0)
+        trainer = Trainer(
+            model,
+            optimizer,
+            Objective((TaskLossConfig("long_view", "long_view"),)),
+            TrainConfig(epochs=1),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer.fit(
+                [batch],
+                [batch],
+                PredictionEvaluator({"long_view": "long_view"}),
+                checkpoint_dir=Path(tmp) / "checkpoints",
+                run_identity={"source": "fixture"},
+            )
+        for name, value in model.state_dict().items():
+            torch.testing.assert_close(value, initial[name], rtol=0, atol=0)
+
+    def test_sampler_epoch_order_is_repeatable_and_independent_of_model_rng(self) -> None:
+        sampler = EpochBatchSampler(11, 4, seed=42)
+        rng = torch.get_rng_state().clone()
+        first = list(sampler)
+        self.assertEqual(first, list(sampler))
+        sampler.set_epoch(1)
+        second = list(sampler)
+        self.assertNotEqual(first, second)
+        self.assertEqual(sorted(i for batch in second for i in batch), list(range(11)))
+        sampler.set_epoch(0)
+        self.assertEqual(first, list(sampler))
+        torch.testing.assert_close(torch.get_rng_state(), rng, rtol=0, atol=0)
+        ordered = EpochBatchSampler(5, 3, seed=None)
+        ordered.set_epoch(4)
+        self.assertEqual(list(ordered), [[0, 1, 2], [3, 4]])
 
     def test_offline_prediction_records_need_no_model_and_validate_alignment(self) -> None:
         values = dict(
@@ -97,7 +149,7 @@ class ModuleContractTests(unittest.TestCase):
                 torch.testing.assert_close(a["metadata"]["event_id"], b["metadata"]["event_id"])
             model = DeepModel(DeepConfig(sparse={"user_code": 999}))
             with self.assertRaisesRegex(ValueError, "disagree"):
-                RankerArtifact(model, tables, "", {})
+                save_ranker(root / "invalid", model, tables, {})
             with self.assertRaisesRegex(ValueError, "never targets"):
                 job_config({"data": str(root / "data"), "model": {"features": ["long_view"]}})
 
@@ -184,7 +236,7 @@ class ModuleContractTests(unittest.TestCase):
             )
             tables = data.load_feature_state()
             model = DeepModel(DeepConfig(dense=("train_duration_log1p",), hidden=(4,)))
-            save_artifact(root / "model", RankerArtifact(model, tables, "", {}))
+            save_ranker(root / "model", model, tables, {})
             script = textwrap.dedent("""
                 import importlib.abc
                 import sys
@@ -198,7 +250,7 @@ class ModuleContractTests(unittest.TestCase):
 
                 sys.meta_path.insert(0, BlockTrainingAndPreparation())
                 from feed_ranker.data.parquet import ParquetReader
-                from feed_ranker.data.dataset import EventDataset, make_loader
+                from feed_ranker.data.dataset import EpochBatchSampler, EventDataset, make_loader
                 from feed_ranker.recommendation.rankers import load_ranker
                 from feed_ranker.recommendation.contracts import Request
                 from feed_ranker.evaluation.predictions import PredictionEvaluator

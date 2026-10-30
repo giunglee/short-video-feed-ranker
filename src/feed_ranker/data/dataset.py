@@ -1,5 +1,6 @@
 """Tensor access to materialized events and deterministic PyTorch batching."""
 
+from collections.abc import Iterator
 from typing import TypedDict
 
 import numpy as np
@@ -89,16 +90,34 @@ class EventDataset(Dataset):
         )
 
 
+class EpochBatchSampler(BatchSampler):
+    """NumPy seed-plus-epoch order, independent of model/dropout RNG state."""
+
+    def __init__(self, size: int, batch_size: int, seed: int | None) -> None:
+        super().__init__(range(size), batch_size, drop_last=False)
+        self.seed = seed
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        if type(epoch) is not int or epoch < 0:
+            raise ValueError("Epoch must be a nonnegative integer")
+        self.epoch = epoch
+
+    def __iter__(self) -> Iterator[list[int]]:
+        order = (
+            np.arange(len(self.sampler))
+            if self.seed is None
+            else np.random.default_rng(self.seed + self.epoch).permutation(len(self.sampler))
+        )
+        for start in range(0, len(order), self.batch_size):
+            yield order[start : start + self.batch_size].tolist()
+
+
 def make_loader(dataset: EventDataset, batch_size: int, seed: int | None = None) -> DataLoader:
-    """Batch-index sampler preserves NumPy ordering without per-event collation."""
+    """Batch stored tensors; the sampler supplies deterministic epoch ordering."""
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("Batch size must be a positive integer")
-    order = (
-        np.arange(len(dataset))
-        if seed is None
-        else np.random.default_rng(seed).permutation(len(dataset))
-    )
-    batches = BatchSampler(order, batch_size=batch_size, drop_last=False)
+    batches = EpochBatchSampler(len(dataset), batch_size, seed)
     return DataLoader(
         dataset,
         batch_size=None,

@@ -8,10 +8,10 @@ import numpy as np
 import pandas as pd
 
 from feed_ranker.artifacts import (
-    CosineArtifact,
-    PopularityArtifact,
     RankerArtifact,
-    save_artifact,
+    save_cosine,
+    save_popularity,
+    save_ranker,
 )
 from feed_ranker.models.ranking import DeepConfig, DeepModel
 from feed_ranker.models.recall import SparseCosineCooccurrence
@@ -40,20 +40,15 @@ class ArtifactRecommendationTests(unittest.TestCase):
         scope = CandidateScope(np.array([10, 20]))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            save_artifact(root / "ranker", RankerArtifact(model, state, "", {}))
+            save_ranker(root / "ranker", model, state, {})
             ranker = load_ranker(root / "ranker")
             direct = ModelRanker(RankerArtifact(model, state, "fitted", {}))
             np.testing.assert_array_equal(
                 ranker.score(request, scope.items).scores, direct.score(request, scope.items).scores
             )
             cosine = SparseCosineCooccurrence([np.array([0, 1]), np.array([1])], 2)
-            for kind, fitted in (("cosine", cosine), ("popularity", cosine.counts)):
-                save_artifact(
-                    root / kind,
-                    (PopularityArtifact if kind == "popularity" else CosineArtifact)(
-                        fitted, state.user_ids, state.item_ids, "", {}
-                    ),
-                )
+            save_cosine(root / "cosine", cosine, state.user_ids, state.item_ids, {})
+            save_popularity(root / "popularity", cosine.counts, state.user_ids, state.item_ids, {})
             retrievers = [load_retriever(root / kind) for kind in ("cosine", "popularity")]
             for policy in ("round_robin", "rrf"):
                 merged = MergedRetriever(retrievers, policy, source_depth=50)

@@ -10,10 +10,9 @@ import numpy as np
 import torch
 
 from feed_ranker.artifacts import (
-    CosineArtifact,
-    MFArtifact,
-    PopularityArtifact,
-    save_artifact,
+    save_cosine,
+    save_mf,
+    save_popularity,
 )
 from feed_ranker.models.recall import BPRMF, SparseCosineCooccurrence
 from feed_ranker.recommendation.contracts import CandidateScope, Request
@@ -42,13 +41,12 @@ class RecallReferenceTests(unittest.TestCase):
         mf.load_state_dict(fixture["checkpoint"]["model"])
         cosine = SparseCosineCooccurrence([np.array([0, 1]), np.array([1]), np.array([2])], 4)
         with tempfile.TemporaryDirectory() as tmp:
-            for artifact in (
-                MFArtifact(mf, users, items, arrays["supported"], "", {}),
-                CosineArtifact(cosine, users, items, "", {}),
-                PopularityArtifact(cosine.counts, users, items, "", {}),
-            ):
-                path = Path(tmp) / artifact.kind
-                save_artifact(path, artifact)
+            root = Path(tmp)
+            save_mf(root / "mf", mf, users, items, arrays["supported"], {})
+            save_cosine(root / "cosine", cosine, users, items, {})
+            save_popularity(root / "popularity", cosine.counts, users, items, {})
+            for kind in ("mf", "cosine", "popularity"):
+                path = root / kind
                 rng = torch.get_rng_state().clone()
                 with patch("pandas.read_parquet", side_effect=AssertionError("Event read")):
                     retriever = load_retriever(path)

@@ -41,6 +41,12 @@ class FeatureState:
     _item_index: pd.Index = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self.validate()
+        self._user_index = pd.Index(self.user_ids)
+        self._item_index = pd.Index(self.item_ids)
+
+    def validate(self) -> None:
+        """Check the stored arrays before use or export without rebuilding lookup indexes."""
         if set(self.user_features) & set(self.item_features):
             raise ValueError("User and item feature names must be disjoint")
         if set(self.vocab_sizes) - set(self.feature_names):
@@ -67,8 +73,6 @@ class FeatureState:
                     or (values >= self.vocab_sizes[name]).any()
                 ):
                     raise ValueError(f"{name}: categorical code outside fitted vocabulary")
-        self._user_index = pd.Index(self.user_ids)
-        self._item_index = pd.Index(self.item_ids)
 
     @property
     def feature_names(self) -> tuple[str, ...]:
@@ -106,6 +110,7 @@ class FeatureState:
         return {name: values[name] for name in selected}
 
     def save(self, directory: Path) -> None:
+        self.validate()
         np.savez(
             directory / "feature-state.npz",
             users=self.user_ids,

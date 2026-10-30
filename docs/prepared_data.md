@@ -88,9 +88,10 @@ silently during loading. Existing source, result and prepared directories are no
 overwritten. Changed data identity also prevents resuming an old run against new
 files; current-format CPU continuation remains supported.
 
-New model exports use `fitted-scorer-v4` with grouped feature definitions. Existing
-fitted-scorer-v2/v3 artifacts still load: only their stored flat feature ownership
-description is converted to the two groups. Feature arrays and weights are not
+New model exports use `fitted-scorer-v5`, with grouped feature definitions under
+`model/features/` and inference configuration in `model/config.json`. Existing
+fitted-scorer-v2/v3/v4 artifacts still load. For v2/v3, the stored flat feature
+ownership description is converted to the two groups. Feature arrays and weights are not
 refitted or changed. No old Dataset/lookup import aliases are retained.
 
 Current train-fitted duration and snapshot assumptions are preserved. A storage

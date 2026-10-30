@@ -4,18 +4,18 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import torch
 
 from feed_ranker.artifacts import (
-    CosineArtifact,
-    MFArtifact,
-    PopularityArtifact,
-    RankerArtifact,
     load_artifact,
-    save_artifact,
+    save_cosine,
+    save_mf,
+    save_popularity,
+    save_ranker,
 )
 from feed_ranker.models.ranking import DeepConfig, DeepModel
 from feed_ranker.models.recall import BPRMF, SparseCosineCooccurrence
@@ -39,22 +39,27 @@ class ModelArtifactTests(unittest.TestCase):
         mf = BPRMF(2, 2, 3)
         mf.item_updated[0] = True
         cosine = SparseCosineCooccurrence([np.array([0, 1]), np.array([1])], 2)
-        artifacts = [RankerArtifact(deep, state, "", {})]
-        artifacts.extend(
-            [
-                MFArtifact(mf, state.user_ids, state.item_ids, np.array([True, False]), "", {}),
-                CosineArtifact(cosine, state.user_ids, state.item_ids, "", {}),
-                PopularityArtifact(cosine.counts, state.user_ids, state.item_ids, "", {}),
-            ]
-        )
         with tempfile.TemporaryDirectory() as tmp:
-            for artifact in artifacts:
-                path = Path(tmp) / artifact.kind
-                before = torch.get_rng_state().clone()
-                save_artifact(path, artifact)
+            root = Path(tmp)
+            before = torch.get_rng_state().clone()
+            # Saving must not deserialize state or initialize a second model.
+            with (
+                patch("feed_ranker.artifacts.load_artifact", side_effect=AssertionError("reload")),
+                patch("feed_ranker.artifacts.DeepModel", side_effect=AssertionError("reconstruct")),
+            ):
+                save_ranker(root / "deep", deep, state, {})
+                save_mf(
+                    root / "mf", mf, state.user_ids, state.item_ids, np.array([True, False]), {}
+                )
+                save_cosine(root / "cosine", cosine, state.user_ids, state.item_ids, {})
+                save_popularity(
+                    root / "popularity", cosine.counts, state.user_ids, state.item_ids, {}
+                )
+            for kind in ("deep", "mf", "cosine", "popularity"):
+                path = root / kind
                 loaded = load_artifact(path)
                 torch.testing.assert_close(before, torch.get_rng_state())
-                if artifact.kind == "deep":
+                if kind == "deep":
                     batch = {
                         "features": {
                             n: torch.from_numpy(v)
@@ -70,20 +75,20 @@ class ModelArtifactTests(unittest.TestCase):
                         atol=0,
                     )
                     self.assertEqual(loaded.feature_state.vocab_sizes, state.vocab_sizes)
-                elif artifact.kind == "mf":
+                elif kind == "mf":
                     for name, value in mf.state_dict().items():
                         torch.testing.assert_close(
                             value, loaded.model.state_dict()[name], rtol=0, atol=0
                         )
                     np.testing.assert_array_equal(loaded.supported_users, [True, False])
-                elif artifact.kind == "cosine":
+                elif kind == "cosine":
                     np.testing.assert_array_equal(
                         cosine.score(0, np.arange(2)), loaded.model.score(0, np.arange(2))
                     )
                 else:
                     np.testing.assert_array_equal(cosine.counts, loaded.model)
-                with self.assertRaises(FileExistsError):
-                    save_artifact(path, artifact)
+            with self.assertRaises(FileExistsError):
+                save_ranker(root / "deep", deep, state, {})
             path = Path(tmp) / "deep"
             manifest = json.loads((path / "manifest.json").read_text())
             manifest["output_schema"]["long_view"]["meaning"] = "probability"
@@ -91,13 +96,62 @@ class ModelArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "meaning"):
                 load_artifact(path)
             manifest["output_schema"]["long_view"]["meaning"] = "binary logit"
-            manifest["model_config"]["hidden"] = [5]
+            config_path = path / "config.json"
+            config = json.loads(config_path.read_text())
+            config["hidden"] = [5]
+            config_path.write_text(json.dumps(config))
+            manifest["files"]["config.json"] = sha256(config_path)
             (path / "manifest.json").write_text(json.dumps(manifest))
             with self.assertRaisesRegex(ValueError, "shape/dtype/value"):
                 load_artifact(path)
             (Path(tmp) / "mf" / "weights.pt").write_bytes(b"corrupt")
             with self.assertRaisesRegex(ValueError, "checksum"):
                 load_artifact(Path(tmp) / "mf")
+
+    def test_export_failure_never_publishes_partial_or_invalid_state(self) -> None:
+        state = fit_entity_features(
+            pd.DataFrame({"user_id": [1], "video_id": [10], "duration_ms": [100]})
+        )
+        model = DeepModel(DeepConfig(dense=("train_duration_log1p",), hidden=(4,)))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model"
+            with patch.object(state, "save", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    save_ranker(path, model, state, {})
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+            state.item_features["train_duration_log1p"][1] = np.nan
+            with self.assertRaisesRegex(ValueError, "nonfinite fitted feature"):
+                save_ranker(path, model, state, {})
+            self.assertFalse(path.exists())
+            state.item_features["train_duration_log1p"][1] = 0
+            with torch.no_grad():
+                next(model.parameters()).fill_(float("nan"))
+            with self.assertRaisesRegex(ValueError, "nonfinite model weights"):
+                save_ranker(path, model, state, {})
+            self.assertFalse(path.exists())
+
+    def test_export_rejects_unsupported_parameter_dtypes(self) -> None:
+        state = fit_entity_features(
+            pd.DataFrame({"user_id": [1], "video_id": [10], "duration_ms": [100]})
+        )
+        deep = DeepModel(DeepConfig(dense=("train_duration_log1p",), hidden=(4,))).double()
+        mf = BPRMF(1, 1, 2).double()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(ValueError, "require torch.float32"):
+                save_ranker(root / "deep", deep, state, {})
+            with self.assertRaisesRegex(ValueError, "require torch.float32"):
+                save_mf(root / "mf", mf, state.user_ids, state.item_ids, np.array([True]), {})
+            with self.assertRaisesRegex(ValueError, "Invalid MF dimension"):
+                save_mf(
+                    root / "empty",
+                    BPRMF(1, 1, 0),
+                    state.user_ids,
+                    state.item_ids,
+                    np.array([True]),
+                    {},
+                )
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_legacy_artifacts_keep_feature_values_without_training_objectives(self) -> None:
         state = fit_entity_features(
@@ -111,10 +165,26 @@ class ModelArtifactTests(unittest.TestCase):
         expected = model(features)["long_view"]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "model"
-            save_artifact(path, RankerArtifact(model, state, "", {}))
+            save_ranker(path, model, state, {})
             manifest = json.loads((path / "manifest.json").read_text())
-            self.assertEqual(manifest["version"], "fitted-scorer-v4")
+            self.assertEqual(manifest["version"], "fitted-scorer-v5")
             self.assertNotIn("tasks", manifest)
+            # v4 embedded configuration and stored feature files at the top level.
+            manifest["model_config"] = json.loads((path / "config.json").read_text())
+            (path / "config.json").unlink()
+            for feature_file in (path / "features").iterdir():
+                feature_file.rename(path / feature_file.name)
+            (path / "features").rmdir()
+            manifest["files"] = {
+                name: sha256(path / name)
+                for name in ("weights.pt", "feature-state.npz", "feature-tables.json")
+            }
+            manifest["version"] = "fitted-scorer-v4"
+            (path / "manifest.json").write_text(json.dumps(manifest))
+            restored = load_artifact(path)
+            torch.testing.assert_close(
+                restored.model(features)["long_view"], expected, rtol=0, atol=0
+            )
             # Recreate the stored flat ownership map used by existing v2/v3 scorers.
             definition_path = path / "feature-tables.json"
             definition = json.loads(definition_path.read_text())

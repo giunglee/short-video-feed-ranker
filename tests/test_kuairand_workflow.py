@@ -78,9 +78,9 @@ class WorkflowTests(unittest.TestCase):
                 "--ranker",
                 "deep/model",
                 "--recall",
-                "recall/popularity",
-                "recall/cosine",
-                "recall/mf",
+                "recall/models/popularity",
+                "recall/models/cosine",
+                "recall/models/mf",
                 "--budget",
                 "2",
             )

@@ -20,12 +20,6 @@ def write_json(path: Path, value: dict[str, Any] | list[Any]) -> None:
     temporary.replace(path)
 
 
-def save_checkpoint(path: Path, checkpoint: dict[str, Any]) -> None:
-    temporary = path.with_suffix(".tmp")
-    torch.save(checkpoint, temporary)
-    temporary.replace(path)
-
-
 def collect_run_provenance() -> dict[str, Any]:
     return {
         "commit": _git_output("rev-parse", "HEAD"),
