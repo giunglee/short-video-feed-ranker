@@ -2,18 +2,150 @@
 
 Public field definitions: https://kuairand.com/. Categorical vocabularies use
 training entities only. Snapshot historical availability is unverified; monthly
-statistics and outcomes are excluded. Runtime lookup lives in data.entity_features.
+statistics and outcomes are excluded. Fitted state is reused by offline example
+materialization and candidate scoring; Dataset loading performs no feature joins.
 """
 
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
 
-from feed_ranker.data.entity_features import EntityFeatureLookup
+from feed_ranker.persistence import write_json
 
 ANONYMOUS = tuple(f"onehot_feat{i}" for i in range(18))
+
+
+@dataclass
+class FeatureState:
+    """Frozen features for offline example preparation and candidate scoring.
+
+    Each group follows its own sorted raw IDs, with an unknown fallback at row
+    zero. Lookup positions are not embedding codes: snapshot-only items have
+    metadata rows but item_code=0. Training batches do not use this state.
+    """
+
+    user_ids: np.ndarray
+    item_ids: np.ndarray
+    user_features: dict[str, np.ndarray]
+    item_features: dict[str, np.ndarray]
+    vocab_sizes: dict[str, int]
+    descriptions: dict[str, dict[str, Any]]
+    _user_index: pd.Index = field(init=False, repr=False)
+    _item_index: pd.Index = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if set(self.user_features) & set(self.item_features):
+            raise ValueError("User and item feature names must be disjoint")
+        if set(self.vocab_sizes) - set(self.feature_names):
+            raise ValueError("Vocabulary definitions require known features")
+        for keys, columns in (
+            (self.user_ids, self.user_features),
+            (self.item_ids, self.item_features),
+        ):
+            if keys.dtype != np.int64 or keys.ndim != 1 or (keys < 0).any():
+                raise ValueError("Entity keys must be nonnegative int64 vectors")
+            if len(keys) and not np.all(keys[1:] > keys[:-1]):
+                raise ValueError("Entity keys must be sorted and unique")
+            for name, values in columns.items():
+                categorical = name in self.vocab_sizes
+                dtype = np.int64 if categorical else np.float32
+                if values.shape != (len(keys) + 1,) or values.dtype != dtype:
+                    raise ValueError(f"{name}: feature shape/dtype mismatch")
+                if not np.isfinite(values).all():
+                    raise ValueError(f"{name}: nonfinite fitted feature")
+                if categorical and (
+                    type(self.vocab_sizes[name]) is not int
+                    or self.vocab_sizes[name] < 1
+                    or (values < 0).any()
+                    or (values >= self.vocab_sizes[name]).any()
+                ):
+                    raise ValueError(f"{name}: categorical code outside fitted vocabulary")
+        self._user_index = pd.Index(self.user_ids)
+        self._item_index = pd.Index(self.item_ids)
+
+    @property
+    def feature_names(self) -> tuple[str, ...]:
+        return (*self.user_features, *self.item_features)
+
+    def transform(
+        self, user_ids: np.ndarray, item_ids: np.ndarray, names: tuple[str, ...] | None = None
+    ) -> dict[str, np.ndarray]:
+        """Assemble aligned feature columns without fitting or reading source data."""
+        if (
+            user_ids.ndim != 1
+            or user_ids.shape != item_ids.shape
+            or user_ids.dtype != np.int64
+            or item_ids.dtype != np.int64
+        ):
+            raise ValueError("Require aligned int64 raw user/item vectors")
+        if (user_ids < 0).any() or (item_ids < 0).any():
+            raise ValueError("Raw IDs cannot be negative")
+        selected = self.feature_names if names is None else names
+        if (
+            not selected
+            or len(set(selected)) != len(selected)
+            or set(selected) - set(self.feature_names)
+        ):
+            raise ValueError("Require unique known feature names")
+        values = {}
+        for index, ids, columns in (
+            (self._user_index, user_ids, self.user_features),
+            (self._item_index, item_ids, self.item_features),
+        ):
+            rows = index.get_indexer(ids) + 1
+            for name in selected:
+                if name in columns:
+                    values[name] = columns[name][rows]
+        return {name: values[name] for name in selected}
+
+    def save(self, directory: Path) -> None:
+        np.savez(
+            directory / "feature-state.npz",
+            users=self.user_ids,
+            items=self.item_ids,
+            **self.user_features,
+            **self.item_features,
+        )
+        write_json(
+            directory / "feature-tables.json",
+            {
+                "user_features": list(self.user_features),
+                "item_features": list(self.item_features),
+                "vocab_sizes": self.vocab_sizes,
+                "descriptions": self.descriptions,
+            },
+        )
+
+    @classmethod
+    def load(cls, directory: Path) -> FeatureState:
+        definition = json.loads((directory / "feature-tables.json").read_text())
+        # Existing fitted-scorer v2/v3 packages store the same arrays with a flat map.
+        if "entities" in definition:
+            owners = definition.pop("entities")
+            if set(owners.values()) - {"user", "item"}:
+                raise ValueError("Invalid legacy feature lookup definitions")
+            definition["user_features"] = [n for n, owner in owners.items() if owner == "user"]
+            definition["item_features"] = [n for n, owner in owners.items() if owner == "item"]
+        users, items = definition.pop("user_features"), definition.pop("item_features")
+        if len(set(users + items)) != len(users + items):
+            raise ValueError("Feature names must be unique")
+        with np.load(directory / "feature-state.npz", allow_pickle=False) as state:
+            if set(state.files) != {"users", "items", *users, *items}:
+                raise ValueError("Unexpected fitted-state arrays")
+            return cls(
+                state["users"],
+                state["items"],
+                {n: state[n] for n in users},
+                {n: state[n] for n in items},
+                **definition,
+            )
 
 
 def _snapshot_rows(frame: pd.DataFrame, key: str) -> pd.DataFrame:
@@ -49,7 +181,7 @@ def _duration_columns(values: np.ndarray) -> dict[str, np.ndarray]:
 
 def fit_entity_features(
     train: pd.DataFrame, basic: pd.DataFrame | None = None, profiles: pd.DataFrame | None = None
-) -> EntityFeatureLookup:
+) -> FeatureState:
     """Materialize attributes once per entity, independently of model input selection.
 
     Snapshot-only items have lookup rows but retain item_code=0. Their metadata
@@ -67,11 +199,10 @@ def fit_entity_features(
         profiles = _snapshot_rows(profiles, "user_id").reindex(user_ids)
         item_ids = np.union1d(warm_item_ids, basic.index.to_numpy(dtype=np.int64))
 
-    columns = {
-        "user_code": np.arange(len(user_ids) + 1, dtype=np.int64),
+    user_features = {"user_code": np.arange(len(user_ids) + 1, dtype=np.int64)}
+    item_features = {
         "item_code": np.r_[0, pd.Index(warm_item_ids).get_indexer(item_ids) + 1],
     }
-    entities = {"user_code": "user", "item_code": "item"}
     vocab_sizes = {"user_code": len(user_ids) + 1, "item_code": len(warm_item_ids) + 1}
     descriptions: dict[str, dict[str, Any]] = {
         "user_code": {"missing": "zero OOV"},
@@ -103,25 +234,24 @@ def fit_entity_features(
     for prefix, (duration, availability) in duration_sources.items():
         for suffix, values in _duration_columns(duration).items():
             name = f"{prefix}_{suffix}"
-            columns[name] = values
-            entities[name] = "item"
+            item_features[name] = values
             descriptions[name] = {**duration_descriptions[suffix], "availability": availability}
         vocab_sizes[f"{prefix}_band"] = 5
 
     if basic is not None and profiles is not None:
-        columns["author_code"], vocab_sizes["author_code"] = _encode_categories(
+        item_features["author_code"], vocab_sizes["author_code"] = _encode_categories(
             basic.author_id.reindex(warm_item_ids), basic.author_id.reindex(item_ids)
         )
-        entities["author_code"] = "item"
         descriptions["author_code"] = {
             "missing": "zero OOV",
             "availability": "snapshot; historical availability unverified",
         }
         for name in ANONYMOUS:
-            columns[name], vocab_sizes[name] = _encode_categories(profiles[name], profiles[name])
-            entities[name] = "user"
+            user_features[name], vocab_sizes[name] = _encode_categories(
+                profiles[name], profiles[name]
+            )
             descriptions[name] = {
                 "missing": "zero null/sentinel/OOV",
                 "availability": "anonymous snapshot; historical availability unverified",
             }
-    return EntityFeatureLookup(user_ids, item_ids, columns, entities, vocab_sizes, descriptions)
+    return FeatureState(user_ids, item_ids, user_features, item_features, vocab_sizes, descriptions)

@@ -1,79 +1,99 @@
-# Prepared KuaiRand data
+# Materialized training data and tensor loading
 
-Preparation owns raw interpretation, splits, fitted transformations and lookup
-state. It does not depend on model architecture or an experiment recipe.
+Preparation writes complete scalar-feature examples. Loading selects columns and
+batches tensors; it does not join entity tables or fit transformations.
 
-`preprocessing/kuairand.py:prepare_kuairand()` writes train/validation event Parquet, a
-versioned manifest, `feature-state.npz` and `feature-tables.json`. The manifest
-records event dtypes, targets, source identity and split assumptions. Descriptive
-feature provenance stays with the tables; there is no shared `FieldSpec` object.
+## Files and ownership
 
-`preprocessing/features.py:fit_entity_features()` builds one `EntityFeatureLookup`
-from training events and declared snapshots. Private functions align snapshots,
-encode categories and transform duration; there is no intermediate metadata-state
-class. The runtime `data/` package imports no preparation code.
+`preprocessing/kuairand.py:prepare_kuairand()` reads complete source records,
+deduplicates before projection, selects the cohort and temporal splits, fits
+features on training data, and writes `train.parquet` and `validation.parquet`.
+Every row contains raw event/user/item identities, time, `warm_item`, all supported
+features, and the configured named targets. A model may select fewer features
+without rebuilding these files. Unknown IDs remain categorical code zero.
 
-`data/prepared.py:PreparedDataset(path)` reads only the manifest. `read_split(name, columns)`
-verifies and reads that split; `load_feature_state()` verifies only the fitted
-tables. `validate()` audits all splits. This protocol exposes no test split.
+The manifest records feature/metadata dtypes, target names, vocabulary sizes,
+feature descriptions, split bounds, raw/snapshot hashes, and output hashes.
+Feature, target and metadata roles are disjoint. The current preparation protocol
+declares only train and validation; May 2–8 remains unscored. The reader can read
+an explicitly declared test split, but never discovers one implicitly.
 
-`data/entity_features.py:EntityFeatureLookup` owns raw user/item keys, transformed column
-arrays, their entity lookup assignments, fitted categorical vocabulary sizes and
-provenance. Its cached indexes resolve raw IDs. `gather()` uses the same mappings
-for training events and recommendation candidates; `save()`/`load()` preserve
-those mappings without event-table access. Row zero is the unknown-entity row.
-Train-median and snapshot durations remain distinct; cold-item metadata does not
-grant membership in the warm candidate vocabulary.
+`data/parquet.py:ParquetReader(path)` reads only the manifest at construction.
+`read_split(name, columns)` checks the requested file hash and column types,
+then returns a DataFrame using Parquet column projection. It needs no fitted
+feature arrays. `validate()` is the full audit of all splits and fitted state:
+finite values, category ranges, binary targets, event identity, cohort flags and
+temporal bounds. Preparation runs that audit before returning; `validate-data`
+can run it again explicitly. It is not repeated by each batch.
 
-The lookup stores precomputed attributes once per user/item, not once per event.
-It contains categorical codes, not learned embeddings. Its `user_ids` and
-`item_ids` are raw keys; each feature column has an extra row zero for unknown
-entities. `entities` selects the user or item lookup, while `vocab_sizes` describes
-the separate categorical code range consumed by an embedding layer.
-
-For training items `[100, 300]` and snapshot items `[100, 200, 300]`, the lookup
-has three item rows, but `item_code` is `[0, 1, 0, 2]` including the fallback row.
-Item 200 can have a known author and duration while its item identity is unknown.
-An entirely absent item uses the fallback row for every item feature. Raw category
-zero remains a legitimate category; null, sentinel -124 and unseen categories
-encode to zero. Category vocabularies are fitted only on training entities.
+`data/dataset.py:EventDataset` accepts an already loaded DataFrame and explicit
+feature/target names. It validates the selected inputs, copies them into owned
+tensors once, and returns indexed examples or batches. Categorical inputs are
+int64; dense inputs and targets are float32. Raw IDs/time are int64 metadata;
+`warm_item` is boolean metadata. Features and labels stay in separate dictionaries.
+No state lookup, transformation, or file access occurs in `__getitem__`.
 
 ```python
-# Preparation: fit once, independently of the model's feature recipe.
-lookup = fit_entity_features(train, basic, profiles)
+from pathlib import Path
+from feed_ranker.data.parquet import ParquetReader
+from feed_ranker.data.dataset import EventDataset, make_loader
 
-# Event loading and candidate scoring both use this operation:
-features = lookup.gather(user_ids, item_ids, names=model.config.feature_names)
-outputs = model(features)
+reader = ParquetReader(Path("runs/prepared"))
+features = ("user_code", "item_code", "train_duration_log1p")
+targets = ("long_view",)
+columns = [*reader.metadata_dtypes, *features, *targets]
+events = reader.read_split("train", columns)
+dataset = EventDataset(events, features, targets)
+loader = make_loader(dataset, batch_size=1024, seed=42)
 ```
 
-`EventDataset` attaches labels to the gathered tensors; `ModelRanker` gathers
-features for candidate items without labels. The model receives tensors only.
-`RankerArtifact` packages the model and its matching lookup. This is a materialized
-snapshot, not a live feature service: new metadata requires updating/rebuilding
-the lookup. Fitted vocabularies and numeric transforms must remain consistent
-with the model when doing so.
+`make_loader()` uses standard PyTorch `BatchSampler`/`DataLoader` with vectorized
+tensor indexing. NumPy seed-plus-epoch permutation, isolated loader RNG, repeatable
+validation passes, and final partial batches are preserved. Training/scoring owns
+device transfer. Model inputs are resolved from manifest types/vocabulary sizes;
+the manifest contains no embedding dimensions, model presets or loss settings.
 
-`data/instances.py:EventDataset` owns event metadata and target tensors and shares
-one `EntityFeatureLookup` instance. Construction itself validates required/unique
-columns, role separation, integer nonnegative metadata, unique event IDs and binary
-outcomes; it does not rely on the job to make instances valid. Its feature list
-comes from the model's resolved input configuration. `make_loader()` uses PyTorch `BatchSampler`/`DataLoader`,
-vectorized gathers, NumPy seed-plus-epoch ordering and a separate loader RNG.
-The same validation loader can be iterated repeatedly. Final partial batches are
-retained. Features and targets are separate named tensor dictionaries; raw IDs,
-time and cohort flags are metadata.
+## Fitted state and new candidates
 
-Memory is O(events + entity fields), with O(events) ordering indices. Batch index
-lists and transformed gathers are allocated one batch at a time. There are no
-per-recipe entity-table copies or user-by-item Cartesian tables. Source ingestion
-is chunked, but selected cohort events remain in memory. This is not a streaming
-or 27K readiness claim; real 1K memory/throughput measurement is separately scoped.
+`preprocessing/features.py:FeatureState` retains frozen `user_features` and
+`item_features` separately. Each group follows its sorted raw IDs, with fallback
+row zero. There is no separate feature-to-entity dictionary. `fit_entity_features()`
+constructs this state; `transform(user_ids, item_ids, names)` returns NumPy feature
+columns used both to materialize training rows and to score new candidate pairs.
+Candidate scoring reads no event table or outcomes and never refits state.
 
-The current format is `kuairand-prepared-v3`. Earlier unmerged schema-based
-prepared directories must be regenerated into a fresh directory. Existing source
-and result directories are never overwritten.
+Lookup positions and embedding codes remain distinct. With training items
+`[100, 300]` and snapshot items `[100, 200, 300]`, item lookup row 2 describes
+item 200, while its identity code is zero. Its metadata may still be known.
+Metadata presence does not make it part of the warm candidate vocabulary.
 
-The Python naming cleanup preserves the current on-disk filenames, NPZ keys and
-values. Existing prepared-v3 and fitted-scorer-v2/v3 artifacts remain readable;
-it does not require regenerating the completed regression study.
+`feature-state.npz` and `feature-tables.json` persist grouped arrays, vocabulary
+sizes, and descriptions. `ParquetReader.load_feature_state()` checks these files
+independently for model export, recall fitting, or candidate scoring. Ordinary
+event loading does not call it. `RankerArtifact` packages this state with matching
+weights/configuration. Runtime scoring imports the reusable feature module, but
+does not import raw preparation or training jobs.
+
+## Resource and compatibility limits
+
+Tensor memory is proportional to events times selected columns. Materialization
+duplicates entity attributes across events; Parquet compression may reduce disk
+cost, not the in-memory tensor size. Source reading is chunked, but selected
+cohort events, output frames and tensor datasets are in memory. This is not a
+streaming implementation or a 27K memory/throughput claim.
+
+The new format is `kuairand-prepared-v4`. Old event-only prepared-v3 files must be
+regenerated into a fresh directory. They are rejected explicitly, never joined
+silently during loading. Existing source, result and prepared directories are not
+overwritten. Changed data identity also prevents resuming an old run against new
+files; current-format CPU continuation remains supported.
+
+New model exports use `fitted-scorer-v4` with grouped feature definitions. Existing
+fitted-scorer-v2/v3 artifacts still load: only their stored flat feature ownership
+description is converted to the two groups. Feature arrays and weights are not
+refitted or changed. No old Dataset/lookup import aliases are retained.
+
+Current train-fitted duration and snapshot assumptions are preserved. A storage
+change does not establish historical snapshot availability or add time-varying
+features. History construction and negative sampling require a separate concrete
+experiment; no future sequence format is introduced here.

@@ -12,9 +12,8 @@ and BPR MF provide candidates for retrieval, merging and ranking.
 
 - **Preprocessing:** [raw validation, splits and preparation](src/feed_ranker/preprocessing/kuairand.py),
   [train-fitted features](src/feed_ranker/preprocessing/features.py).
-- **Data:** [prepared tables](src/feed_ranker/data/prepared.py),
-  [fitted feature lookup](src/feed_ranker/data/entity_features.py), and
-  [instances/loaders](src/feed_ranker/data/instances.py).
+- **Data:** [Parquet split reading and validation](src/feed_ranker/data/parquet.py)
+  and [tensor datasets/loaders](src/feed_ranker/data/dataset.py).
 - **Models:** [Deep ranking](src/feed_ranker/models/ranking.py) and
   [BPR / sparse cosine recall](src/feed_ranker/models/recall.py).
 - **Training:** [named objectives](src/feed_ranker/training/objectives.py) and

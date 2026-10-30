@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from feed_ranker.data.instances import EventDataset
+from feed_ranker.data.dataset import EventDataset
 from feed_ranker.evaluation.metrics import binary_metrics, user_auc_metrics
 from feed_ranker.models.recall import SparseCosineCooccurrence
 from feed_ranker.preprocessing.features import fit_entity_features
@@ -79,11 +79,12 @@ class KuaiRandStudyTests(unittest.TestCase):
         pos, neg = histories(train, state.user_ids, state.item_ids, "long_view")
         self.assertEqual(pos[0].tolist(), [0])
         self.assertEqual(neg[0].tolist(), [1])
-        names = tuple(state.columns)
-        a = EventDataset(val, state, names, ("long_view",))
+        names = state.feature_names
+        features = state.transform(val.user_id.to_numpy(), val.video_id.to_numpy())
+        materialized = val.assign(**features, warm_item=features["item_code"] > 0)
+        a = EventDataset(materialized, names, ("long_view",))
         b = EventDataset(
-            val.assign(duration_ms=999999, long_view=1 - val.long_view),
-            state,
+            materialized.assign(duration_ms=999999, long_view=1 - val.long_view),
             names,
             ("long_view",),
         )

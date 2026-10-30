@@ -81,7 +81,7 @@ class MetadataTests(unittest.TestCase):
         events, basic, profiles = fixture()
         train = events.loc[events.time_ms.lt(10)]
         state = fit_entity_features(train, basic, profiles)
-        values = state.gather(np.array([1, 2, 99]), np.array([40, 50, 999]))
+        values = state.transform(np.array([1, 2, 99]), np.array([40, 50, 999]))
         self.assertEqual(values["item_code"].tolist(), [0, 0, 0])
         self.assertEqual(values["author_code"].tolist(), [1, 0, 0])
         self.assertEqual(values["onehot_feat0"].tolist(), [1, 0, 0])
@@ -96,7 +96,9 @@ class MetadataTests(unittest.TestCase):
         changed.loc[changed.video_id.eq(50), "author_id"] = 12345
         after = fit_entity_features(train, changed, profiles)
         self.assertEqual(after.vocab_sizes, state.vocab_sizes)
-        np.testing.assert_array_equal(after.columns["author_code"], state.columns["author_code"])
+        np.testing.assert_array_equal(
+            after.item_features["author_code"], state.item_features["author_code"]
+        )
 
     def test_lookup_rows_are_independent_of_embedding_codes(self) -> None:
         train = pd.DataFrame(
@@ -112,7 +114,9 @@ class MetadataTests(unittest.TestCase):
         profiles = pd.DataFrame({"user_id": [10], **{n: [0] for n in ANONYMOUS}})
         lookup = fit_entity_features(train, basic, profiles)
         self.assertEqual(lookup.item_ids.tolist(), [100, 200, 300])
-        values = lookup.gather(user_ids=np.array([10, 10, 10]), item_ids=np.array([200, 300, 999]))
+        values = lookup.transform(
+            user_ids=np.array([10, 10, 10]), item_ids=np.array([200, 300, 999])
+        )
         self.assertEqual(values["item_code"].tolist(), [0, 2, 0])
         self.assertEqual(values["author_code"].tolist(), [1, 2, 0])
         self.assertEqual(values["metadata_duration_missing"].tolist(), [0, 0, 1])

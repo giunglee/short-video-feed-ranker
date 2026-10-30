@@ -49,8 +49,10 @@ class ModelRanker:
 
     def score(self, request: Request, items: np.ndarray) -> ScoredItems:
         users = np.full(len(items), request.user_id, dtype=np.int64)
-        features = self.fitted.feature_state.gather(users, items, self.model.config.feature_names)
-        return ScoredItems(items, self.predict({n: v.numpy() for n, v in features.items()}))
+        features = self.fitted.feature_state.transform(
+            users, items, self.model.config.feature_names
+        )
+        return ScoredItems(items, self.predict(features))
 
 
 def load_ranker(path: Path, *, batch_size: int = 8192, output: str | None = None) -> ModelRanker:

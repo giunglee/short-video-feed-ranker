@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from feed_ranker.data.prepared import PreparedDataset
+from feed_ranker.data.parquet import ParquetReader
 from feed_ranker.evaluation.funnel import evaluate_pipeline, open_benchmark
 from feed_ranker.preprocessing.kuairand import TRAIN_END, VAL_END, prepare_kuairand
 from feed_ranker.recommendation.contracts import CandidateScope, Request, Retriever
@@ -64,7 +64,7 @@ def main() -> None:
             profiles=args.profiles,
         )
     elif args.command == "validate-data":
-        PreparedDataset(args.data).validate()
+        ParquetReader(args.data).validate()
     elif args.command == "train":
         train_job(
             job_config(json.loads(args.config.read_text())), args.out, resume_from=args.resume_from

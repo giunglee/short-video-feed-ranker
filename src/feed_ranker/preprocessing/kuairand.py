@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from feed_ranker.data.prepared import VERSION, PreparedDataset
+from feed_ranker.data.parquet import VERSION, ParquetReader
 from feed_ranker.persistence import sha256, write_json
 from feed_ranker.preprocessing.features import fit_entity_features
 
@@ -130,7 +130,7 @@ def prepare_kuairand(
     val_end: int = VAL_END,
     basic: Path | None = None,
     profiles: Path | None = None,
-) -> PreparedDataset:
+) -> ParquetReader:
     if not targets or len(set(targets)) != len(targets) or set(targets) - {"long_view", "is_click"}:
         raise ValueError("Configure unique supported binary target columns")
     train, val, source = read_cohort(
@@ -154,17 +154,31 @@ def prepare_kuairand(
     state.save(out)
     keys = ["event_id", "user_id", "video_id", "time_ms"]
     for name, frame in (("train", train), ("validation", val)):
+        features = state.transform(
+            frame.user_id.to_numpy(dtype=np.int64), frame.video_id.to_numpy(dtype=np.int64)
+        )
         frame = frame[keys + list(targets)].astype(
             {**{k: "int64" for k in keys}, **{t: "float32" for t in targets}}
         )
+        frame = frame.assign(**features, warm_item=features["item_code"] > 0)
         frame.to_parquet(out / f"{name}.parquet", index=False)
     files = ["train.parquet", "validation.parquet", "feature-state.npz", "feature-tables.json"]
     write_json(
         out / "manifest.json",
         {
             "version": VERSION,
-            "event_dtypes": {**dict.fromkeys(keys, "int64"), **dict.fromkeys(targets, "float32")},
+            "metadata_dtypes": {**dict.fromkeys(keys, "int64"), "warm_item": "bool"},
+            "feature_dtypes": {
+                name: "int64" if name in state.vocab_sizes else "float32"
+                for name in state.feature_names
+            },
+            "vocab_sizes": state.vocab_sizes,
+            "feature_descriptions": state.descriptions,
             "targets": list(targets),
+            "splits": {
+                "train": {"end": train_end},
+                "validation": {"start": train_end, "end": val_end},
+            },
             **source,
             "train_end": train_end,
             "val_end": val_end,
@@ -175,4 +189,6 @@ def prepare_kuairand(
             "files": {name: sha256(out / name) for name in files},
         },
     )
-    return PreparedDataset(out)
+    reader = ParquetReader(out)
+    reader.validate()
+    return reader

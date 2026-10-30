@@ -19,6 +19,7 @@ from feed_ranker.artifacts import (
 )
 from feed_ranker.models.ranking import DeepConfig, DeepModel
 from feed_ranker.models.recall import BPRMF, SparseCosineCooccurrence
+from feed_ranker.persistence import sha256
 from feed_ranker.preprocessing.features import fit_entity_features
 
 
@@ -54,7 +55,14 @@ class ModelArtifactTests(unittest.TestCase):
                 loaded = load_artifact(path)
                 torch.testing.assert_close(before, torch.get_rng_state())
                 if artifact.kind == "deep":
-                    batch = {"features": state.gather(np.array([1, 99]), np.array([10, 99]))}
+                    batch = {
+                        "features": {
+                            n: torch.from_numpy(v)
+                            for n, v in state.transform(
+                                np.array([1, 99]), np.array([10, 99])
+                            ).items()
+                        }
+                    }
                     torch.testing.assert_close(
                         deep(batch["features"])["long_view"],
                         loaded.model(batch["features"])["long_view"],
@@ -91,19 +99,31 @@ class ModelArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum"):
                 load_artifact(Path(tmp) / "mf")
 
-    def test_v2_artifact_scores_without_reconstructing_training_objective(self) -> None:
+    def test_legacy_artifacts_keep_feature_values_without_training_objectives(self) -> None:
         state = fit_entity_features(
             pd.DataFrame({"user_id": [1, 1], "video_id": [10, 20], "duration_ms": [100, 200]})
         )
         model = DeepModel(DeepConfig(dense=("train_duration_log1p",), hidden=(4,))).eval()
-        features = state.gather(np.array([1, 99]), np.array([10, 999]))
+        features = {
+            n: torch.from_numpy(v)
+            for n, v in state.transform(np.array([1, 99]), np.array([10, 999])).items()
+        }
         expected = model(features)["long_view"]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "model"
             save_artifact(path, RankerArtifact(model, state, "", {}))
             manifest = json.loads((path / "manifest.json").read_text())
-            self.assertEqual(manifest["version"], "fitted-scorer-v3")
+            self.assertEqual(manifest["version"], "fitted-scorer-v4")
             self.assertNotIn("tasks", manifest)
+            # Recreate the stored flat ownership map used by existing v2/v3 scorers.
+            definition_path = path / "feature-tables.json"
+            definition = json.loads(definition_path.read_text())
+            definition["entities"] = {
+                **dict.fromkeys(definition.pop("user_features"), "user"),
+                **dict.fromkeys(definition.pop("item_features"), "item"),
+            }
+            definition_path.write_text(json.dumps(definition))
+            manifest["files"]["feature-tables.json"] = sha256(definition_path)
             # The preceding format stores training supervision separately from weights.
             manifest["version"] = "fitted-scorer-v2"
             manifest["tasks"] = [
@@ -116,11 +136,23 @@ class ModelArtifactTests(unittest.TestCase):
                     "task_weight": 2.0,
                 }
             ]
-            (path / "manifest.json").write_text(json.dumps(manifest))
-            restored = load_artifact(path)
-            torch.testing.assert_close(
-                restored.model(features)["long_view"], expected, rtol=0, atol=0
-            )
+            for version in ("fitted-scorer-v2", "fitted-scorer-v3"):
+                manifest["version"] = version
+                (path / "manifest.json").write_text(json.dumps(manifest))
+                restored = load_artifact(path)
+                restored_features = {
+                    n: torch.from_numpy(v)
+                    for n, v in restored.feature_state.transform(
+                        np.array([1, 99]), np.array([10, 999])
+                    ).items()
+                }
+                for name in features:
+                    torch.testing.assert_close(
+                        features[name], restored_features[name], rtol=0, atol=0
+                    )
+                torch.testing.assert_close(
+                    restored.model(restored_features)["long_view"], expected, rtol=0, atol=0
+                )
             manifest["version"] = "unsupported"
             (path / "manifest.json").write_text(json.dumps(manifest))
             with self.assertRaisesRegex(ValueError, "version/kind"):

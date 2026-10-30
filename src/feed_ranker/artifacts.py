@@ -12,19 +12,19 @@ import numpy as np
 import torch
 from torch import nn
 
-from feed_ranker.data.entity_features import EntityFeatureLookup
 from feed_ranker.models.ranking import DeepConfig, DeepModel
 from feed_ranker.models.recall import BPRMF, SparseCosineCooccurrence
 from feed_ranker.persistence import sha256, write_json
+from feed_ranker.preprocessing.features import FeatureState
 
-VERSION = "fitted-scorer-v3"
+VERSION = "fitted-scorer-v4"
 KINDS = ("deep", "mf", "popularity", "cosine")
 
 
 @dataclass
 class RankerArtifact:
     model: DeepModel
-    feature_state: EntityFeatureLookup
+    feature_state: FeatureState
     identity: str
     provenance: dict[str, Any]
     kind: ClassVar[str] = "deep"
@@ -32,7 +32,7 @@ class RankerArtifact:
     def __post_init__(self) -> None:
         config = self.model.config
         if (
-            set(config.feature_names) - self.feature_state.columns.keys()
+            set(config.feature_names) - set(self.feature_state.feature_names)
             or any(
                 self.feature_state.vocab_sizes.get(n) != size for n, size in config.sparse.items()
             )
@@ -161,7 +161,10 @@ def save_artifact(path: Path, artifact: ModelArtifact) -> None:
 def load_artifact(path: Path) -> ModelArtifact:
     manifest = json.loads((path / "manifest.json").read_text())
     kind = manifest.get("kind")
-    if manifest.get("version") not in ("fitted-scorer-v2", VERSION) or kind not in KINDS:
+    if (
+        manifest.get("version") not in ("fitted-scorer-v2", "fitted-scorer-v3", VERSION)
+        or kind not in KINDS
+    ):
         raise ValueError("Unsupported fitted scorer version/kind")
     required = (
         {"feature-state.npz", "feature-tables.json", "weights.pt"}
@@ -176,7 +179,7 @@ def load_artifact(path: Path) -> ModelArtifact:
     identity, provenance = sha256(path / "manifest.json"), manifest["provenance"]
     with torch.random.fork_rng(devices=[]):
         if kind == "deep":
-            tables = EntityFeatureLookup.load(path)
+            tables = FeatureState.load(path)
             config = DeepConfig(**manifest["model_config"])
             if manifest["output_schema"] != {
                 config.output: {"dtype": "float32", "shape": ["B"], "meaning": "binary logit"}

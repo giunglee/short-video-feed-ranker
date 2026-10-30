@@ -8,19 +8,21 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import torch
 from test_prepared_data import raw_fixture
 
 from feed_ranker.artifacts import RankerArtifact, save_artifact
-from feed_ranker.data.instances import EventDataset, make_loader
+from feed_ranker.data.dataset import EventDataset, make_loader
 from feed_ranker.evaluation.predictions import (
     PredictionEvaluator,
     Predictions,
     evaluate_predictions,
 )
 from feed_ranker.models.ranking import DeepConfig, DeepModel
+from feed_ranker.preprocessing.features import FeatureState
 from feed_ranker.preprocessing.kuairand import prepare_kuairand
 from feed_ranker.training.jobs import job_config
 from feed_ranker.training.objectives import Objective, TaskLossConfig
@@ -86,7 +88,7 @@ class ModuleContractTests(unittest.TestCase):
             )
             tables = data.load_feature_state()
             dataset = EventDataset(
-                data.read_split("validation"), tables, ("user_code", "item_code"), ("long_view",)
+                data.read_split("validation"), ("user_code", "item_code"), ("long_view",)
             )
             loader = make_loader(dataset, 3)
             first, second = list(loader), list(loader)
@@ -113,17 +115,32 @@ class ModuleContractTests(unittest.TestCase):
         self.assertEqual(config.feature_names, ("item",))
         torch.testing.assert_close(expected, model(features)["long_view"], rtol=0, atol=0)
 
+    def test_model_inputs_resolve_from_manifest_without_feature_arrays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prepare_kuairand(raw_fixture(root), root / "data", users=0, train_end=10, val_end=15)
+            with patch.object(FeatureState, "load", side_effect=AssertionError("state read")):
+                config = job_config(
+                    {
+                        "data": str(root / "data"),
+                        "model": {"features": ["item_code", "train_duration_log1p"]},
+                        "tasks": [{"output": "long_view", "target": "long_view"}],
+                        "training": {},
+                    }
+                )
+            self.assertEqual(dict(config.model.sparse), {"item_code": 4})
+            self.assertEqual(config.model.dense, ("train_duration_log1p",))
+
     def test_independent_loader_rejects_invalid_roles_ids_and_outcomes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data = prepare_kuairand(
                 raw_fixture(root), root / "data", users=0, train_end=10, val_end=15
             )
-            tables = data.load_feature_state()
             frame = data.read_split("train")
             features = ("user_code", "item_code")
             with self.assertRaisesRegex(ValueError, "separate"):
-                EventDataset(frame, tables, features, ("user_id",))
+                EventDataset(frame, features, ("user_id",))
             for column in ("user_id", "video_id", "time_ms", "event_id"):
                 for invalid in (1.9, float("nan"), -1):
                     broken = frame.copy()
@@ -131,16 +148,16 @@ class ModuleContractTests(unittest.TestCase):
                     broken.loc[0, column] = invalid
                     with self.subTest(column=column, invalid=invalid):
                         with self.assertRaisesRegex(ValueError, "integer event metadata"):
-                            EventDataset(broken, tables, features, ("long_view",))
+                            EventDataset(broken, features, ("long_view",))
             for invalid in (2.0, float("nan")):
                 broken = frame.copy()
                 broken.loc[0, "long_view"] = invalid
                 with self.assertRaisesRegex(ValueError, "binary targets"):
-                    EventDataset(broken, tables, features, ("long_view",))
+                    EventDataset(broken, features, ("long_view",))
             with self.assertRaisesRegex(ValueError, "unique"):
-                EventDataset(frame.drop(columns="time_ms"), tables, features, ("long_view",))
+                EventDataset(frame.drop(columns="time_ms"), features, ("long_view",))
             with self.assertRaisesRegex(ValueError, "unique"):
-                EventDataset(frame, tables, features, ("long_view", "long_view"))
+                EventDataset(frame, features, ("long_view", "long_view"))
 
     def test_feature_order_survives_serialization_and_missing_inputs_fail(self) -> None:
         config = DeepConfig(dense=("duration",), sparse={"user": 3, "item": 4}, hidden=(4,))
@@ -159,7 +176,7 @@ class ModuleContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing model feature"):
             model({"user": features["user"]})
 
-    def test_loading_and_inference_do_not_import_preparation_or_training(self) -> None:
+    def test_loading_and_inference_do_not_import_raw_preparation_or_training(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data = prepare_kuairand(
@@ -175,20 +192,20 @@ class ModuleContractTests(unittest.TestCase):
 
                 class BlockTrainingAndPreparation(importlib.abc.MetaPathFinder):
                     def find_spec(self, fullname, path=None, target=None):
-                        if fullname.startswith(("feed_ranker.training", "feed_ranker.preprocessing")):
+                        if fullname.startswith(("feed_ranker.training", "feed_ranker.preprocessing.kuairand")):
                             raise AssertionError(f"Unexpected inference dependency: {fullname}")
                         return None
 
                 sys.meta_path.insert(0, BlockTrainingAndPreparation())
-                from feed_ranker.data.prepared import PreparedDataset
-                from feed_ranker.data.instances import EventDataset, make_loader
+                from feed_ranker.data.parquet import ParquetReader
+                from feed_ranker.data.dataset import EventDataset, make_loader
                 from feed_ranker.recommendation.rankers import load_ranker
                 from feed_ranker.recommendation.contracts import Request
                 from feed_ranker.evaluation.predictions import PredictionEvaluator
-                data = PreparedDataset(Path("data"))
+                data = ParquetReader(Path("data"))
                 ranker = load_ranker(Path("model"))
                 events = data.read_split("validation")
-                dataset = EventDataset(events, data.load_feature_state(), ranker.model.config.feature_names, ("long_view",))
+                dataset = EventDataset(events, ranker.model.config.feature_names, ("long_view",))
                 records = PredictionEvaluator({"long_view": "long_view"}).collect(ranker.model, make_loader(dataset, 2))
                 result = ranker.score(Request("q", 1), events.video_id.unique())
                 assert len(result.items) > 0

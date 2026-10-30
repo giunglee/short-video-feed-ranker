@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterable
 import torch
 from torch import nn
 
-from feed_ranker.data.instances import Batch
+from feed_ranker.data.dataset import Batch
 from feed_ranker.persistence import save_checkpoint, write_json
 from feed_ranker.training.optimizer import OptimizerConfig, build_optimizer
 

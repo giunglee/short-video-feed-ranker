@@ -14,15 +14,17 @@ state and its public methods before following the private implementation.
   raw interpretation, cohort/split selection and writing prepared outputs.
   `preprocessing/features.py:fit_entity_features()` fits entity features using training
   events and explicitly supplied snapshots. Neither selects model architectures.
-- **`PreparedDataset`** — state: path, manifest, targets, event dtypes, identity.
+- **`ParquetReader`** (`data/parquet.py`) — state: path, manifest, column roles/dtypes,
+  vocabulary sizes, declared splits and identity.
   Methods: `read_split(name, columns)`, `load_feature_state()`, `validate()`.
-- **`EntityFeatureLookup` (dataclass)** — state: raw `user_ids`/`item_ids`, columns, entity
-  assignments, vocabulary sizes, descriptions, cached lookup indexes.
-  Methods: `gather(user_ids, item_ids, names)`, `save(directory)`, `load(directory)`.
-  Preparation constructs this state; training and inference share its runtime
-  lookup. `_duration_columns(values)` is a private pure transform in preprocessing.
-- **`EventDataset(Dataset)`** — state: shared EntityFeatureLookup, selected feature names,
-  target tensors and event metadata. Methods: `__len__()`, `__getitem__(index)`.
+- **`FeatureState` (dataclass, `preprocessing/features.py`)** — state: raw
+  `user_ids`/`item_ids`, separate user/item feature arrays, vocabulary sizes,
+  descriptions and cached indexes. Methods: `transform(user_ids, item_ids, names)`,
+  `save(directory)`, `load(directory)`. Preparation and candidate scoring use this
+  state; training examples already contain transformed values.
+- **`EventDataset(Dataset)`** (`data/dataset.py`) — state: selected feature tensors,
+  target tensors and event metadata, loaded once from materialized rows.
+  Methods: `__len__()`, `__getitem__(index)`; no entity lookups during batching.
   `make_loader(dataset, batch_size, seed)` supplies the standard PyTorch DataLoader.
 - **`DeepModel(nn.Module)`** — state: DeepConfig, embeddings and MLP.
   Method: `forward(features)` returns named logits, plus inherited PyTorch
@@ -50,7 +52,7 @@ state and its public methods before following the private implementation.
   Methods: `collect(model, batches)` and `evaluate(model, batches)`.
   **`Predictions` (dataclass)** stores aligned labels, logits, users, warm flags and
   validity. `evaluate_predictions(records)` computes metrics without a model.
-- **Fitted artifact dataclasses** — `RankerArtifact` holds model plus EntityFeatureLookup;
+- **Fitted artifact dataclasses** — `RankerArtifact` holds model plus FeatureState;
   `MFArtifact` holds model, vocabularies and supported users; `CosineArtifact` and
   `PopularityArtifact` hold fitted scores/state plus vocabularies. Each carries
   identity and provenance. `save_artifact()`/`load_artifact()` own persistence.
@@ -95,7 +97,7 @@ These functions do not select model inputs, fit transforms or score a final mode
 
 ```text
 preprocessing/ kuairand.py, features.py, kuairand_audit.py
-data/          prepared.py, entity_features.py, instances.py
+data/          parquet.py, dataset.py
 models/        ranking.py, recall.py, components/mlp.py
 training/      objectives.py, trainer.py, bpr.py, optimizer.py, jobs.py
 artifacts.py   fitted scorer records and validated save/load
@@ -105,22 +107,24 @@ recommendation/ rankers.py, retrievers.py, merged.py, merging.py, pipeline.py
                 contracts.py, ordering.py, replay.py, traces.py
 ```
 
-Preprocessing depends on runtime data types; runtime data access imports no raw
-preparation. Models own architecture and scoring, without data or training imports.
+Preprocessing writes materialized splits; ordinary Parquet/tensor reads import no
+feature preparation. Fitted-state loading and scoring reuse preprocessing/features.py,
+but never import the raw preparation entry point. Models own architecture and scoring,
+without data or training imports.
 Training composes models with supervision and optimization. Artifact loading uses
 model definitions and fitted data state without constructing training objectives.
 Runtime recommendation consumes those artifacts; evaluation owns held-out labels.
 
 BPR's observed-negative sampling defines training comparisons, so `histories()`,
 `ObservedSampler` and `fit_mf()` live together in `training/bpr.py`. Ordinary
-example ordering/batching stays with the Dataset/DataLoader in `data/instances.py`.
+example ordering/batching stays with the Dataset/DataLoader in `data/dataset.py`.
 Jobs own construction and export; `optimizer.py` retains the shared decay policy.
 
 ## Responsibilities and state
 
-- **Data:** [prepared datasets](prepared_data.md) own event access and fitted
-  feature lookup; preprocessing owns fitting those transformations. `EventDataset`/`DataLoader` produce named feature, target and
-  metadata tensors independently of training.
+- **Data:** [materialized datasets](prepared_data.md) contain complete feature/target
+  rows. ParquetReader owns file access/validation; EventDataset/DataLoader own tensor
+  construction and batching. Preprocessing owns fitting and feature assembly.
 - **Model:** `models/ranking.py:DeepModel` owns its dense/sparse input configuration,
   embeddings and MLP. `forward(features)` returns named logits. Training objectives
   independently resolve labels, masks and weights. It never receives
@@ -267,12 +271,14 @@ training and actual artifact-only multi-channel scoring. These checks establish
 software correctness, not real-data quality, 27K memory readiness, or online
 latency. Those measurements require separately scoped runs.
 
-Prepared data remains `kuairand-prepared-v3`. New exports use `fitted-scorer-v3`,
-which omits the former top-level training-task definition. The loader also accepts
-`fitted-scorer-v2`: those task definitions are historical metadata, unnecessary
-for scoring. Model configuration, weights, feature state and output meaning are
-still checked. Historical KuaiRand v1/v2 bundles are a different format and still
-require the pinned checkout. Earlier unmerged prepared formats require regeneration.
+Prepared data now uses `kuairand-prepared-v4`, containing complete example rows.
+Regenerate older event-only prepared data into a fresh directory. New exports use
+`fitted-scorer-v4`, with grouped user/item feature definitions. The loader also
+accepts fitted-scorer-v2/v3 without refitting or constructing training objectives.
+Model configuration, weights, feature state and output meaning are still checked.
+Historical KuaiRand v1/v2 bundles are a different format and still require the
+pinned checkout. Dependent study callers must adopt the new reader/Dataset imports
+and materialized-data interface; no forwarding aliases are retained.
 
 Deep models concatenate sparse inputs in sorted-name order followed by configured
 dense order. That changed during the larger rearchitecture, so its retraining is

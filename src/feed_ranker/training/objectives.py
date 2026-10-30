@@ -11,7 +11,7 @@ from torch import nn
 from torch.nn import functional as F
 
 if TYPE_CHECKING:
-    from feed_ranker.data.instances import Batch
+    from feed_ranker.data.dataset import Batch
 
 
 @dataclass(frozen=True)

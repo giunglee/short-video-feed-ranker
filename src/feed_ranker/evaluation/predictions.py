@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from feed_ranker.data.instances import Batch
+from feed_ranker.data.dataset import Batch
 from feed_ranker.evaluation.metrics import binary_metrics, user_auc_metrics
 
 

@@ -40,7 +40,10 @@ class NamedPredictionTests(unittest.TestCase):
             hidden=(4,),
         )
         model = DeepModel(config).eval()
-        features = state.gather(np.array([1, 1]), np.array([10, 20]))
+        features = {
+            n: torch.from_numpy(v)
+            for n, v in state.transform(np.array([1, 1]), np.array([10, 20])).items()
+        }
         expected = model(features)["long_view"]
         actual = model({**features, "long_view": torch.full((2,), float("nan"))})["long_view"]
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)

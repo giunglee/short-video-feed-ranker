@@ -16,8 +16,8 @@ from feed_ranker.artifacts import (
     RankerArtifact,
     save_artifact,
 )
-from feed_ranker.data.instances import EventDataset, make_loader
-from feed_ranker.data.prepared import PreparedDataset
+from feed_ranker.data.dataset import EventDataset, make_loader
+from feed_ranker.data.parquet import ParquetReader
 from feed_ranker.evaluation.predictions import PredictionEvaluator
 from feed_ranker.models.ranking import DeepConfig, DeepModel
 from feed_ranker.models.recall import BPRMF, SparseCosineCooccurrence
@@ -47,7 +47,7 @@ class TrainingJobConfig:
 def train_job(
     config: TrainingJobConfig, directory: Path, *, resume_from: Path | None = None
 ) -> dict[str, Any]:
-    data = PreparedDataset(config.data)
+    data = ParquetReader(config.data)
     for task in config.tasks:
         if task.target not in data.targets or task.output != config.model.output:
             raise ValueError("Objective target/output does not match prepared/model inputs")
@@ -55,9 +55,9 @@ def train_job(
             raise ValueError("Current observed-event preparation has no mask/weight columns")
     tables = data.load_feature_state()
     targets = tuple(dict.fromkeys(t.target for t in config.tasks))
-    columns = ["event_id", "user_id", "video_id", "time_ms", *targets]
+    columns = [*data.metadata_dtypes, *config.model.feature_names, *targets]
     train, validation = [
-        EventDataset(data.read_split(split, columns), tables, config.model.feature_names, targets)
+        EventDataset(data.read_split(split, columns), config.model.feature_names, targets)
         for split in ("train", "validation")
     ]
     torch.manual_seed(config.training.seed)
@@ -100,13 +100,13 @@ def train_job(
 def job_config(value: dict[str, Any]) -> TrainingJobConfig:
     """Resolve an experiment's input list once against fitted ETL vocabularies."""
     data = Path(value["data"])
-    tables = PreparedDataset(data).load_feature_state()
+    reader = ParquetReader(data)
     model = dict(value["model"])
     names = tuple(model.pop("features"))
-    if not names or len(set(names)) != len(names) or set(names) - tables.columns.keys():
+    if not names or len(set(names)) != len(names) or set(names) - reader.feature_dtypes.keys():
         raise ValueError("Model inputs must be fitted features, never targets/metadata")
-    model["dense"] = tuple(n for n in names if n not in tables.vocab_sizes)
-    model["sparse"] = {n: tables.vocab_sizes[n] for n in names if n in tables.vocab_sizes}
+    model["dense"] = tuple(n for n in names if n not in reader.vocab_sizes)
+    model["sparse"] = {n: reader.vocab_sizes[n] for n in names if n in reader.vocab_sizes}
     training = dict(value["training"])
     training["optimizer"] = OptimizerConfig(**training.get("optimizer", {}))
     return TrainingJobConfig(
@@ -123,12 +123,12 @@ def fit_recall_job(
 ) -> dict[str, Any]:
     if type(epochs) is not int or epochs < 1 or type(seed) is not int or not 0 <= seed < 2**32:
         raise ValueError("Require positive MF epochs and a valid seed")
-    data = PreparedDataset(data_path)
+    data = ParquetReader(data_path)
     if target not in data.manifest["targets"]:
         raise ValueError("Recall target must be a prepared target")
     state = data.load_feature_state()
     users = state.user_ids
-    items = state.item_ids[state.columns["item_code"][1:] > 0]
+    items = state.item_ids[state.item_features["item_code"][1:] > 0]
     train = data.read_split("train", ["user_id", "video_id", target])
     positive, negative = histories(train, users, items, target)
     cosine = SparseCosineCooccurrence(positive, len(items))
