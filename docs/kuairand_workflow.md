@@ -1,7 +1,7 @@
 # Current KuaiRand workflow
 
 The core interfaces are preprocessing, runtime data access, models, training,
-fitted artifacts, evaluation and recommendation. The local job composes them; PR #10 adds the matched-seed study. Prior PRs
+fitted artifacts, evaluation and recommendation. The local job and external study compose them. Prior PRs
 supply behavior references, not structural constraints. Standard-tab-1 temporal
 `long_view` semantics remain unchanged; May 2–8 is outside this workflow.
 
@@ -182,7 +182,7 @@ save_ranker(run_directory / "model", model, feature_state, provenance)
 ```
 
 `training/jobs.py` is the optional local composition, including path handling,
-input resolution and both ranking/recall export. The dependent [PR #10](https://github.com/giunglee/short-video-feed-ranker/pull/10) adds comparisons.
+input resolution and both ranking/recall export. External `experiments/kuairand.py` adds comparisons.
 Their configuration uses `loading` for batch sizes and `training` for optimization
 and selection. The experiment feature list is resolved once into the model's
 concrete dense/sparse configuration and saved with the fitted package.
@@ -281,8 +281,9 @@ recommendation and evaluation save label-free traces; evaluation adds per-user
 metrics and full-pool denominators. Evaluation uses the existing top10 protocol.
 
 Run EDA independently using the [raw-audit command](raw_audit.md).
-The study runner, recipe configurations and historical KuaiRand results live in
-the dependent PR #10; merge this architecture first.
+For matched comparisons, use the [study guide](kuairand_baselines.md) and explicit
+recipe configurations. The runner owns frozen recall reuse, seed groups and
+comparison reporting; the package owns preparation, models, training and metrics.
 
 The current package replaces the older execution paths. KuaiRec scalar training,
 its feature framework and capped-watch-ratio evaluators, old KuaiRand preparation
